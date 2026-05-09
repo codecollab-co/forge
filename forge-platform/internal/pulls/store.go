@@ -191,6 +191,52 @@ func (s *Store) AddComment(ctx context.Context, prID, authorID, body string) (*C
 	return c, nil
 }
 
+// AddAgentComment appends a review comment authored by the system Reviewer
+// Agent. author_id is NULL; UI keys off author_kind='agent' for badging.
+func (s *Store) AddAgentComment(ctx context.Context, prID, body string) (*Comment, error) {
+	c := &Comment{}
+	err := s.pool.QueryRow(ctx, `
+        INSERT INTO platform.pr_comments (pr_id, author_id, author_kind, body)
+        VALUES ($1, NULL, 'agent', $2)
+        RETURNING id, pr_id, author_id, author_kind, body, created_at
+    `, prID, body).Scan(
+		&c.ID, &c.PRID, &c.AuthorID, &c.AuthorKind, &c.Body, &c.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// GetByID returns a PR by its UUID and looks up the owning repo.
+func (s *Store) GetByID(ctx context.Context, prID string) (*PullRequest, string, string, error) {
+	var pr PullRequest
+	var ownerHandle, repoName string
+	err := s.pool.QueryRow(ctx, `
+        SELECT pr.id, pr.repo_id, pr.number, pr.author_id, pr.title, COALESCE(pr.body,''),
+               pr.head_branch, pr.base_branch, pr.state, pr.merge_commit_oid, pr.merged_at,
+               pr.created_at, pr.updated_at, u.handle,
+               ou.handle, r.name
+          FROM platform.pull_requests pr
+          JOIN platform.repositories r ON r.id = pr.repo_id
+          JOIN platform.users ou ON ou.id = r.owner_id
+          LEFT JOIN platform.users u ON u.id = pr.author_id
+         WHERE pr.id = $1
+    `, prID).Scan(
+		&pr.ID, &pr.RepoID, &pr.Number, &pr.AuthorID, &pr.Title, &pr.Body,
+		&pr.HeadBranch, &pr.BaseBranch, &pr.State, &pr.MergeCommitOID, &pr.MergedAt,
+		&pr.CreatedAt, &pr.UpdatedAt, &pr.AuthorHandle,
+		&ownerHandle, &repoName,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", "", ErrNotFound
+		}
+		return nil, "", "", err
+	}
+	return &pr, ownerHandle, repoName, nil
+}
+
 func (s *Store) ListComments(ctx context.Context, prID string) ([]*Comment, error) {
 	rows, err := s.pool.Query(ctx, `
         SELECT c.id, c.pr_id, c.author_id, c.author_kind, c.body, c.created_at, u.handle

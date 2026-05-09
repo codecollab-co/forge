@@ -113,6 +113,24 @@ class PlatformClient:
             r.raise_for_status()
             return r.json()["commit_oid"]
 
+    async def get_pull(self, pr_id: str) -> dict:
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.get(
+                f"{self._base_url}/internal/pulls/{pr_id}",
+                headers=self._headers(),
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def add_pull_agent_comment(self, pr_id: str, body: str) -> None:
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.post(
+                f"{self._base_url}/internal/pulls/{pr_id}/comments",
+                headers=self._headers(),
+                json={"body": body, "author_kind": "agent"},
+            )
+            r.raise_for_status()
+
     async def open_pr(
         self,
         repo_id: str,

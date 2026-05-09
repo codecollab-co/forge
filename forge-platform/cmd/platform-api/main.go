@@ -977,6 +977,57 @@ func main() {
 			writeJSON(w, http.StatusCreated, map[string]any{"branch": body.Branch, "commit_oid": oid})
 		})
 
+		ir.Get("/pulls/{pr_id}", func(w http.ResponseWriter, req *http.Request) {
+			prID := chi.URLParam(req, "pr_id")
+			pr, ownerHandle, repoName, err := pullsStore.GetByID(req.Context(), prID)
+			if err != nil {
+				if errors.Is(err, pulls.ErrNotFound) {
+					http.NotFound(w, req)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			diff, _ := gitStorage.Diff(req.Context(), ownerHandle, repoName, pr.BaseBranch, pr.HeadBranch)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"pr_id":       pr.ID,
+				"repo_owner":  ownerHandle,
+				"repo_name":   repoName,
+				"number":      pr.Number,
+				"title":       pr.Title,
+				"body":        pr.Body,
+				"head_branch": pr.HeadBranch,
+				"base_branch": pr.BaseBranch,
+				"diff":        string(diff),
+			})
+		})
+
+		ir.Post("/pulls/{pr_id}/comments", func(w http.ResponseWriter, req *http.Request) {
+			prID := chi.URLParam(req, "pr_id")
+			var body struct {
+				Body       string `json:"body"`
+				AuthorKind string `json:"author_kind"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(body.Body) == "" {
+				http.Error(w, "body is required", http.StatusBadRequest)
+				return
+			}
+			if body.AuthorKind != "agent" {
+				http.Error(w, "author_kind must be 'agent' on this endpoint", http.StatusBadRequest)
+				return
+			}
+			c, err := pullsStore.AddAgentComment(req.Context(), prID, body.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusCreated, commentResponse(c))
+		})
+
 		ir.Post("/repos/{repo_id}/pulls", func(w http.ResponseWriter, req *http.Request) {
 			repoID := chi.URLParam(req, "repo_id")
 			repo, err := reposStore.GetByID(req.Context(), repoID)

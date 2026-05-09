@@ -29,6 +29,8 @@ from app.run_pubsub import (
     is_terminal,
     make_pubsub,
 )
+from app.model_client import from_env as model_from_env
+from app.reviewer import ReviewContext, review as review_pr
 from app.runner import RunRequest, Runner
 from app.sandbox import from_env as sandbox_from_env
 
@@ -47,11 +49,10 @@ async def lifespan(app: FastAPI):
         pubsub=pubsub,
     )
     consumer = Consumer()
+    platform = PlatformClient()
     app.state.pubsub = pubsub
 
-    async def handle(event_type: str, payload: dict) -> None:
-        if event_type != "run.requested":
-            return
+    async def handle_run_requested(payload: dict) -> None:
         if int(payload.get("v", 0)) != 1:
             logger.warning("ignoring run.requested with unknown version v=%s", payload.get("v"))
             return
@@ -71,6 +72,42 @@ async def lifespan(app: FastAPI):
             logger.exception("malformed run.requested payload: %r", payload)
             return
         asyncio.create_task(runner.run(req))
+
+    async def handle_pr_opened(payload: dict) -> None:
+        if int(payload.get("v", 0)) != 1:
+            return
+        pr_id = payload.get("pr_id")
+        if not pr_id:
+            return
+
+        async def _review() -> None:
+            try:
+                pr = await platform.get_pull(pr_id)
+                ctx = ReviewContext(
+                    repo_owner=pr["repo_owner"],
+                    repo_name=pr["repo_name"],
+                    pr_title=pr.get("title", ""),
+                    pr_body=pr.get("body", ""),
+                    base_branch=pr["base_branch"],
+                    head_branch=pr["head_branch"],
+                )
+                comments = await review_pr(
+                    model=model_from_env(), diff=pr.get("diff", ""), ctx=ctx
+                )
+                for c in comments:
+                    await platform.add_pull_agent_comment(pr_id, c.body)
+            except Exception:
+                logger.exception("reviewer failed for pr=%s", pr_id)
+
+        asyncio.create_task(_review())
+
+    async def handle(event_type: str, payload: dict) -> None:
+        if event_type == "run.requested":
+            await handle_run_requested(payload)
+        elif event_type == "pr.opened":
+            await handle_pr_opened(payload)
+        else:
+            logger.debug("ignoring event type=%s", event_type)
 
     task = asyncio.create_task(consumer.run(handle))
     try:
