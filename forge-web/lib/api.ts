@@ -72,4 +72,51 @@ export const api = {
   getGitSecretInfo: () => request<GitSecretInfo>("GET", "/me/git-secret"),
   generateGitSecret: () =>
     request<{ username: string; secret: string }>("POST", "/me/git-secret"),
+
+  listPulls: (owner: string, name: string, state?: PRState) =>
+    request<PullRequest[]>(
+      "GET",
+      `/repos/${owner}/${name}/pulls${state ? `?state=${state}` : ""}`,
+    ),
+  createPull: (owner: string, name: string, input: { title: string; body?: string; head_branch: string; base_branch: string }) =>
+    request<PullRequest>("POST", `/repos/${owner}/${name}/pulls`, input),
+  getPull: (owner: string, name: string, number: number) =>
+    request<PullDetail>("GET", `/repos/${owner}/${name}/pulls/${number}`),
+  addPullComment: (owner: string, name: string, number: number, body: string) =>
+    request<PullComment>("POST", `/repos/${owner}/${name}/pulls/${number}/comments`, { body }),
+  mergePull: (owner: string, name: string, number: number) =>
+    request<{ merge_commit_oid: string; state: string }>(
+      "POST",
+      `/repos/${owner}/${name}/pulls/${number}/merge`,
+    ),
+};
+
+export type PRState = "open" | "merged" | "closed";
+
+export type PullRequest = {
+  id: string;
+  number: number;
+  title: string;
+  body: string;
+  head_branch: string;
+  base_branch: string;
+  state: PRState;
+  author: string;
+  merge_commit_oid: string;
+  merged_at: string | null;
+  created_at: string;
+};
+
+export type PullComment = {
+  id: string;
+  body: string;
+  author: string;
+  author_kind: "user" | "agent";
+  created_at: string;
+};
+
+export type PullDetail = {
+  pull_request: PullRequest;
+  diff: string;
+  comments: PullComment[];
 };

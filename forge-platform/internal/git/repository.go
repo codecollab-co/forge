@@ -206,3 +206,106 @@ func (r *Repository) ReadBlob(ctx context.Context, owner, name, ref, path string
 	}
 	return out, nil
 }
+
+// BranchOID resolves a branch name to its current commit OID.
+// Returns "" + nil if the branch does not exist.
+func (r *Repository) BranchOID(ctx context.Context, owner, name, branch string) (string, error) {
+	if !r.Exists(owner, name) {
+		return "", ErrNotFound
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "rev-parse", "--verify", "refs/heads/"+branch)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Diff returns the unified diff that would result from merging head into base
+// (i.e. what changes head introduces relative to the merge base).
+func (r *Repository) Diff(ctx context.Context, owner, name, base, head string) ([]byte, error) {
+	if !r.Exists(owner, name) {
+		return nil, ErrNotFound
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "diff", base+"..."+head)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff: %w", err)
+	}
+	return out, nil
+}
+
+type Identity struct {
+	Name  string
+	Email string
+}
+
+// MergeBranches creates a merge commit on `base` that brings in `head`.
+// Implemented with merge-tree (Git 2.38+) so it works on a bare repo without
+// a worktree. Returns the merge commit OID.
+//
+// Returns ErrMergeConflict if the merge cannot be performed cleanly. The
+// caller should report this back to the user; we do not attempt resolution.
+func (r *Repository) MergeBranches(
+	ctx context.Context,
+	owner, name, base, head, message string,
+	merger Identity,
+) (string, error) {
+	if !r.Exists(owner, name) {
+		return "", ErrNotFound
+	}
+	repoPath := r.Path(owner, name)
+
+	baseOID, err := r.BranchOID(ctx, owner, name, base)
+	if err != nil {
+		return "", err
+	}
+	if baseOID == "" {
+		return "", fmt.Errorf("base branch %q does not exist", base)
+	}
+	headOID, err := r.BranchOID(ctx, owner, name, head)
+	if err != nil {
+		return "", err
+	}
+	if headOID == "" {
+		return "", fmt.Errorf("head branch %q does not exist", head)
+	}
+
+	mergeTreeCmd := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"merge-tree", "--write-tree", "--no-messages", baseOID, headOID)
+	treeOut, err := mergeTreeCmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", ErrMergeConflict
+		}
+		return "", fmt.Errorf("merge-tree: %w", err)
+	}
+	treeOID := strings.TrimSpace(string(treeOut))
+	if treeOID == "" {
+		return "", ErrMergeConflict
+	}
+
+	commitCmd := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"commit-tree", treeOID, "-p", baseOID, "-p", headOID, "-m", message)
+	commitCmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME="+merger.Name,
+		"GIT_AUTHOR_EMAIL="+merger.Email,
+		"GIT_COMMITTER_NAME="+merger.Name,
+		"GIT_COMMITTER_EMAIL="+merger.Email,
+	)
+	commitOut, err := commitCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("commit-tree: %w", err)
+	}
+	commitOID := strings.TrimSpace(string(commitOut))
+
+	updateCmd := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"update-ref", "refs/heads/"+base, commitOID, baseOID)
+	if out, err := updateCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("update-ref: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return commitOID, nil
+}
+
+var ErrMergeConflict = errors.New("merge conflict")

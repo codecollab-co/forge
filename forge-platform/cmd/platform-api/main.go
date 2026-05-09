@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/eventbus"
 	gitstorage "github.com/codecollab-co/forge/forge-platform/internal/git"
 	"github.com/codecollab-co/forge/forge-platform/internal/githttp"
+	"github.com/codecollab-co/forge/forge-platform/internal/permissions"
+	"github.com/codecollab-co/forge/forge-platform/internal/pulls"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
@@ -49,6 +52,7 @@ func main() {
 	bus := eventbus.New(pool)
 	usersRepo := users.NewRepo(pool)
 	reposStore := repos.NewStore(pool)
+	pullsStore := pulls.NewStore(pool)
 
 	gitStorage, err := gitstorage.New(reposDir)
 	if err != nil {
@@ -312,6 +316,245 @@ func main() {
 		writeJSON(w, http.StatusCreated, map[string]any{"username": u.Handle, "secret": secret})
 	}))
 
+	// ---- Pull Requests --------------------------------------------------
+
+	r.Post("/repos/{owner}/{name}/pulls", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+			permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+			permissions.ActionRead) {
+			http.NotFound(w, req)
+			return
+		}
+
+		var body struct {
+			Title      string `json:"title"`
+			Body       string `json:"body"`
+			HeadBranch string `json:"head_branch"`
+			BaseBranch string `json:"base_branch"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		body.Title = strings.TrimSpace(body.Title)
+		if body.Title == "" || body.HeadBranch == "" || body.BaseBranch == "" {
+			http.Error(w, "title, head_branch, base_branch are required", http.StatusBadRequest)
+			return
+		}
+		if body.HeadBranch == body.BaseBranch {
+			http.Error(w, "head_branch must differ from base_branch", http.StatusBadRequest)
+			return
+		}
+		// Both branches must exist on the server.
+		if oid, _ := gitStorage.BranchOID(req.Context(), repo.OwnerHandle, repo.Name, body.HeadBranch); oid == "" {
+			http.Error(w, "head_branch does not exist", http.StatusBadRequest)
+			return
+		}
+		if oid, _ := gitStorage.BranchOID(req.Context(), repo.OwnerHandle, repo.Name, body.BaseBranch); oid == "" {
+			http.Error(w, "base_branch does not exist", http.StatusBadRequest)
+			return
+		}
+
+		pr, err := pullsStore.Create(req.Context(), pulls.CreateInput{
+			RepoID:     repo.ID,
+			AuthorID:   actor.ID,
+			Title:      body.Title,
+			Body:       body.Body,
+			HeadBranch: body.HeadBranch,
+			BaseBranch: body.BaseBranch,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = bus.Publish(req.Context(), "pr.opened", map[string]any{
+			"pr_id":     pr.ID,
+			"repo_id":   repo.ID,
+			"number":    pr.Number,
+			"author_id": actor.ID,
+			"head":      pr.HeadBranch,
+			"base":      pr.BaseBranch,
+		})
+
+		writeJSON(w, http.StatusCreated, prResponse(pr, actor.Handle))
+	}))
+
+	r.Get("/repos/{owner}/{name}/pulls", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		state := pulls.State(req.URL.Query().Get("state"))
+		list, err := pullsStore.ListByRepo(req.Context(), repo.ID, state)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, pr := range list {
+			out = append(out, prResponse(pr, derefString(pr.AuthorHandle)))
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	r.Get("/repos/{owner}/{name}/pulls/{number}", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		pr, err := pullsStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, pulls.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		diff, _ := gitStorage.Diff(req.Context(), repo.OwnerHandle, repo.Name, pr.BaseBranch, pr.HeadBranch)
+		comments, _ := pullsStore.ListComments(req.Context(), pr.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pull_request": prResponse(pr, derefString(pr.AuthorHandle)),
+			"diff":         string(diff),
+			"comments":     commentResponses(comments),
+		})
+	})
+
+	r.Post("/repos/{owner}/{name}/pulls/{number}/comments", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		pr, err := pullsStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, pulls.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var body struct{ Body string `json:"body"` }
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Body) == "" {
+			http.Error(w, "body is required", http.StatusBadRequest)
+			return
+		}
+
+		c, err := pullsStore.AddComment(req.Context(), pr.ID, actor.ID, body.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		c.AuthorHandle = &actor.Handle
+		writeJSON(w, http.StatusCreated, commentResponse(c))
+	}))
+
+	r.Post("/repos/{owner}/{name}/pulls/{number}/merge", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		// Only the repo owner may merge at MVP (PermissionChecker.ActionPush).
+		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+			permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+			permissions.ActionPush) {
+			http.Error(w, "only the repository owner may merge", http.StatusForbidden)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		pr, err := pullsStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, pulls.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if pr.State != pulls.StateOpen {
+			http.Error(w, "pull request is not open", http.StatusConflict)
+			return
+		}
+
+		message := "Merge pull request #" + strconv.Itoa(pr.Number) + " from " + pr.HeadBranch
+		mergeOID, err := gitStorage.MergeBranches(req.Context(),
+			repo.OwnerHandle, repo.Name, pr.BaseBranch, pr.HeadBranch, message,
+			gitstorage.Identity{Name: actor.Handle, Email: actor.Email})
+		if err != nil {
+			if errors.Is(err, gitstorage.ErrMergeConflict) {
+				http.Error(w, "merge conflict", http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := pullsStore.MarkMerged(req.Context(), pr.ID, actor.ID, mergeOID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = bus.Publish(req.Context(), "pr.merged", map[string]any{
+			"pr_id":            pr.ID,
+			"repo_id":          repo.ID,
+			"number":           pr.Number,
+			"merged_by":        actor.ID,
+			"merge_commit_oid": mergeOID,
+		})
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"merge_commit_oid": mergeOID,
+			"state":            "merged",
+		})
+	}))
+
 	// Smart Git HTTP transport — last so it doesn't shadow API routes.
 	// Matches /<owner>/<name>.git/* (git advertises and pushes here).
 	r.Handle("/{owner}/{name}.git/*", gitHTTP)
@@ -326,6 +569,55 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func httpRepoErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, repos.ErrNotFound) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func prResponse(pr *pulls.PullRequest, authorHandle string) map[string]any {
+	return map[string]any{
+		"id":               pr.ID,
+		"number":           pr.Number,
+		"title":            pr.Title,
+		"body":             pr.Body,
+		"head_branch":      pr.HeadBranch,
+		"base_branch":      pr.BaseBranch,
+		"state":            pr.State,
+		"author":           authorHandle,
+		"merge_commit_oid": derefString(pr.MergeCommitOID),
+		"merged_at":        pr.MergedAt,
+		"created_at":       pr.CreatedAt,
+	}
+}
+
+func commentResponse(c *pulls.Comment) map[string]any {
+	return map[string]any{
+		"id":          c.ID,
+		"body":        c.Body,
+		"author":      derefString(c.AuthorHandle),
+		"author_kind": c.AuthorKind,
+		"created_at":  c.CreatedAt,
+	}
+}
+
+func commentResponses(cs []*pulls.Comment) []map[string]any {
+	out := make([]map[string]any, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, commentResponse(c))
+	}
+	return out
 }
 
 func meResponse(u *users.User) map[string]any {

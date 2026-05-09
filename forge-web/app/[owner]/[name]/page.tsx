@@ -79,6 +79,15 @@ export default async function RepoPage({ params, searchParams }: Props) {
         <p className="text-xs uppercase tracking-wide text-zinc-400">{repo.visibility}</p>
       </header>
 
+      <nav className="flex gap-3 text-sm">
+        <Link
+          href={`/${owner}/${name}/pulls`}
+          className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          Pull Requests
+        </Link>
+      </nav>
+
       <section className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
         <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Clone</h2>
         <pre className="overflow-x-auto text-sm">git clone {cloneURL}</pre>
