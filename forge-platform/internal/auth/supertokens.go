@@ -10,6 +10,8 @@ import (
 	"errors"
 	"os"
 
+	"github.com/supertokens/supertokens-golang/recipe/emailpassword"
+	"github.com/supertokens/supertokens-golang/recipe/emailpassword/epmodels"
 	"github.com/supertokens/supertokens-golang/recipe/session"
 	"github.com/supertokens/supertokens-golang/recipe/thirdparty"
 	"github.com/supertokens/supertokens-golang/recipe/thirdparty/tpmodels"
@@ -36,17 +38,6 @@ func InitSuperTokens(onSignInUp OnSignInUp) error {
 	websiteDomain := envOr("WEBSITE_DOMAIN", "http://localhost:3000")
 
 	providers := []tpmodels.ProviderInput{}
-	if id := os.Getenv("GITHUB_CLIENT_ID"); id != "" {
-		providers = append(providers, tpmodels.ProviderInput{
-			Config: tpmodels.ProviderConfig{
-				ThirdPartyId: "github",
-				Clients: []tpmodels.ProviderClientConfig{{
-					ClientID:     id,
-					ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
-				}},
-			},
-		})
-	}
 	if id := os.Getenv("GOOGLE_CLIENT_ID"); id != "" {
 		providers = append(providers, tpmodels.ProviderInput{
 			Config: tpmodels.ProviderConfig{
@@ -100,6 +91,37 @@ func InitSuperTokens(onSignInUp OnSignInUp) error {
 		},
 	})
 
+	epRecipe := emailpassword.Init(&epmodels.TypeInput{
+		Override: &epmodels.OverrideStruct{
+			APIs: func(orig epmodels.APIInterface) epmodels.APIInterface {
+				inner := *orig.SignUpPOST
+				next := func(
+					formFields []epmodels.TypeFormField,
+					tenantID string,
+					options epmodels.APIOptions,
+					userContext supertokens.UserContext,
+				) (epmodels.SignUpPOSTResponse, error) {
+					resp, err := inner(formFields, tenantID, options, userContext)
+					if err != nil || resp.OK == nil {
+						return resp, err
+					}
+					ev := SignInUp{
+						SuperTokensID: resp.OK.User.ID,
+						Provider:      "emailpassword",
+						ExternalID:    resp.OK.User.ID,
+						Email:         resp.OK.User.Email,
+					}
+					if cbErr := onSignInUp(options.Req.Context(), ev); cbErr != nil {
+						return resp, cbErr
+					}
+					return resp, nil
+				}
+				orig.SignUpPOST = &next
+				return orig
+			},
+		},
+	})
+
 	return supertokens.Init(supertokens.TypeInput{
 		Supertokens: &supertokens.ConnectionInfo{ConnectionURI: connectionURI},
 		AppInfo: supertokens.AppInfo{
@@ -107,7 +129,7 @@ func InitSuperTokens(onSignInUp OnSignInUp) error {
 			APIDomain:     apiDomain,
 			WebsiteDomain: websiteDomain,
 		},
-		RecipeList: []supertokens.Recipe{tpRecipe, session.Init(nil)},
+		RecipeList: []supertokens.Recipe{epRecipe, tpRecipe, session.Init(nil)},
 	})
 }
 

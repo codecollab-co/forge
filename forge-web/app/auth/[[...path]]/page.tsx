@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import { redirectToAuth } from "supertokens-auth-react";
 import { canHandleRoute, getRoutingComponent } from "supertokens-auth-react/ui";
+import { EmailPasswordPreBuiltUI } from "supertokens-auth-react/recipe/emailpassword/prebuiltui";
 import { ThirdPartyPreBuiltUI } from "supertokens-auth-react/recipe/thirdparty/prebuiltui";
 
 // SuperTokens prebuilt UI catch-all for /auth/*.
@@ -12,8 +13,8 @@ export default function AuthCatchAll() {
   const [routed, setRouted] = useState<ReactElement | null>(null);
 
   useEffect(() => {
-    if (canHandleRoute([ThirdPartyPreBuiltUI])) {
-      setRouted(getRoutingComponent([ThirdPartyPreBuiltUI]));
+    if (canHandleRoute([EmailPasswordPreBuiltUI, ThirdPartyPreBuiltUI])) {
+      setRouted(getRoutingComponent([EmailPasswordPreBuiltUI, ThirdPartyPreBuiltUI]));
     } else {
       redirectToAuth();
     }

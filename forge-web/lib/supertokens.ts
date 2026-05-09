@@ -1,4 +1,5 @@
-import ThirdParty, { Github, Google } from "supertokens-auth-react/recipe/thirdparty";
+import EmailPassword from "supertokens-auth-react/recipe/emailpassword";
+import ThirdParty, { Google } from "supertokens-auth-react/recipe/thirdparty";
 import Session from "supertokens-auth-react/recipe/session";
 
 export const apiDomain =
@@ -15,8 +16,9 @@ export const superTokensConfig = {
     websiteBasePath: "/auth",
   },
   recipeList: [
+    EmailPassword.init(),
     ThirdParty.init({
-      signInAndUpFeature: { providers: [Github.init(), Google.init()] },
+      signInAndUpFeature: { providers: [Google.init()] },
     }),
     Session.init(),
   ],
