@@ -166,6 +166,8 @@ export const api = {
   getRepo: (owner: string, name: string) => request<Repo>("GET", `/repos/${owner}/${name}`),
   getBranches: (owner: string, name: string) =>
     request<Branches>("GET", `/repos/${owner}/${name}/branches`),
+  createBranch: (owner: string, name: string, body: { name: string; from?: string }) =>
+    request<{ name: string; from: string }>("POST", `/repos/${owner}/${name}/branches`, body),
   getTree: (owner: string, name: string, ref: string, dir = "") =>
     request<TreeEntry[]>(
       "GET",

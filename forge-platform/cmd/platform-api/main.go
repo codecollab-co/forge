@@ -443,6 +443,15 @@ func main() {
 
 		// Existing repo: land on a new branch + open a PR.
 		baseBranch, _ := gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
+		// DefaultBranch returns the symbolic ref name even on a fresh bare
+		// repo with no commits. Treat "branch exists symbolically but has no
+		// commits" as empty so we commit straight to main rather than open a
+		// PR no one can merge.
+		if baseBranch != "" {
+			if oid, _ := gitStorage.BranchOID(req.Context(), repo.OwnerHandle, repo.Name, baseBranch); oid == "" {
+				baseBranch = ""
+			}
+		}
 		if baseBranch == "" {
 			// Empty repo — commit directly to main.
 			oid, err := gitStorage.CreateCommit(req.Context(),
@@ -484,6 +493,51 @@ func main() {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"branch": branch, "commit_oid": oid, "pr_number": pr.Number,
 		})
+	}))
+
+	r.Post("/repos/{owner}/{name}/branches", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+			permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+			permissions.ActionPush) {
+			http.Error(w, "only the repository owner may create branches", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+			From string `json:"from"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		body.Name = strings.TrimSpace(body.Name)
+		if body.Name == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if body.From == "" {
+			body.From, _ = gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
+			if body.From == "" {
+				http.Error(w, "no default branch — create a commit first", http.StatusBadRequest)
+				return
+			}
+		}
+		if err := gitStorage.CreateBranch(req.Context(), repo.OwnerHandle, repo.Name, body.Name, body.From); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"name": body.Name, "from": body.From})
 	}))
 
 	r.Get("/repos/{owner}/{name}/branches", func(w http.ResponseWriter, req *http.Request) {
@@ -820,6 +874,14 @@ func main() {
 		if err := pullsStore.MarkMerged(req.Context(), pr.ID, actor.ID, mergeOID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Auto-delete throwaway head branches that we own the naming for.
+		// Human-named branches stay until the user deletes them.
+		if strings.HasPrefix(pr.HeadBranch, "upload/") || strings.HasPrefix(pr.HeadBranch, "forge-agent/") {
+			if err := gitStorage.DeleteBranch(req.Context(), repo.OwnerHandle, repo.Name, pr.HeadBranch); err != nil {
+				log.Printf("auto-delete %s/%s/%s: %v", repo.OwnerHandle, repo.Name, pr.HeadBranch, err)
+			}
 		}
 
 		_ = bus.Publish(req.Context(), "pr.merged", map[string]any{

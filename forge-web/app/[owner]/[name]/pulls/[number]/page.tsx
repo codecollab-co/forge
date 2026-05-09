@@ -58,7 +58,8 @@ export default function PullDetailPage() {
     setError(null);
     try {
       await api.mergePull(params.owner, params.name, number);
-      await reload();
+      router.push(`/${params.owner}/${params.name}`);
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -92,6 +93,11 @@ export default function PullDetailPage() {
         >
           {busy ? "Merging…" : "Merge pull request"}
         </button>
+      )}
+      {pr.state === "merged" && pr.merge_commit_oid && (
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Merged as <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-900">{pr.merge_commit_oid.slice(0, 12)}</code>
+        </p>
       )}
 
       <section className="rounded-md border border-zinc-200 dark:border-zinc-800">

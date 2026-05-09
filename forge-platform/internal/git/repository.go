@@ -116,6 +116,47 @@ func (r *Repository) ListRefs(ctx context.Context, owner, name string) ([]Ref, e
 	return refs, nil
 }
 
+// CreateBranch points refs/heads/<name> at the commit referenced by `fromRef`.
+// Errors if `name` already exists or `fromRef` doesn't resolve.
+func (r *Repository) CreateBranch(ctx context.Context, owner, name, branch, fromRef string) error {
+	if !r.Exists(owner, name) {
+		return ErrNotFound
+	}
+	if err := ValidateOwnerOrName(branch); err != nil {
+		return fmt.Errorf("branch: %w", err)
+	}
+	repoPath := r.Path(owner, name)
+	if oid, _ := r.BranchOID(ctx, owner, name, branch); oid != "" {
+		return errors.New("branch already exists")
+	}
+	revOut, err := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--verify", fromRef+"^{commit}").Output()
+	if err != nil {
+		return fmt.Errorf("from %q: %w", fromRef, err)
+	}
+	fromOID := strings.TrimSpace(string(revOut))
+	if out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "update-ref", "refs/heads/"+branch, fromOID).CombinedOutput(); err != nil {
+		return fmt.Errorf("update-ref: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// DeleteBranch removes refs/heads/<branch>. Refuses to delete the symbolic
+// HEAD target so the default branch can't accidentally be removed.
+func (r *Repository) DeleteBranch(ctx context.Context, owner, name, branch string) error {
+	if !r.Exists(owner, name) {
+		return ErrNotFound
+	}
+	defaultBranch, _ := r.DefaultBranch(ctx, owner, name)
+	if branch == defaultBranch {
+		return errors.New("cannot delete the default branch")
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "update-ref", "-d", "refs/heads/"+branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("update-ref -d: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // DefaultBranch returns the short branch name HEAD points at.
 // Empty string + nil error if the repo has no commits yet.
 func (r *Repository) DefaultBranch(ctx context.Context, owner, name string) (string, error) {
@@ -260,15 +301,22 @@ func (r *Repository) MergeBranches(
 	if err != nil {
 		return "", err
 	}
-	if baseOID == "" {
-		return "", fmt.Errorf("base branch %q does not exist", base)
-	}
 	headOID, err := r.BranchOID(ctx, owner, name, head)
 	if err != nil {
 		return "", err
 	}
 	if headOID == "" {
 		return "", fmt.Errorf("head branch %q does not exist", head)
+	}
+
+	// Fast-forward case: base has no commits yet (e.g., default branch on a
+	// freshly-initialised bare repo). Point base at head and call it a merge.
+	if baseOID == "" {
+		updArgs := []string{"-C", repoPath, "update-ref", "refs/heads/" + base, headOID}
+		if out, err := exec.CommandContext(ctx, "git", updArgs...).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("update-ref (fast-forward): %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		return headOID, nil
 	}
 
 	mergeTreeCmd := exec.CommandContext(ctx, "git", "-C", repoPath,

@@ -2,7 +2,8 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { RepoTabs } from "@/app/components/RepoTabs";
-import { CopyButton } from "@/app/components/CopyButton";
+import { CodeDropdown } from "@/app/components/CodeDropdown";
+import { BranchSwitcher } from "@/app/components/BranchSwitcher";
 
 type Props = {
   params: Promise<{ owner: string; name: string }>;
@@ -83,44 +84,40 @@ export default async function RepoPage({ params, searchParams }: Props) {
           <p className="text-xs uppercase tracking-wide text-zinc-400">{repo.visibility}</p>
         </header>
 
-        <section className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Clone</h2>
-            <div className="flex gap-2">
-              <CopyButton text={`git clone ${cloneURL}`} />
-              <Link
-                href={`/${owner}/${name}/upload`}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-              >
-                Upload files
-              </Link>
-            </div>
-          </div>
-          <pre className="overflow-x-auto text-sm">git clone {cloneURL}</pre>
-        </section>
-
-      {!isEmpty && allBranches.length > 1 && (
-        <section className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-zinc-500">Branch:</span>
-          {allBranches.map((b) => (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {!isEmpty ? (
+            <BranchSwitcher
+              owner={owner}
+              name={name}
+              current={ref}
+              branches={allBranches}
+              defaultBranch={branchesInfo.default || "main"}
+              canCreate={true}
+            />
+          ) : (
+            <span className="text-sm text-zinc-500">No branches yet.</span>
+          )}
+          <div className="flex items-center gap-2">
             <Link
-              key={b}
-              href={`/${owner}/${name}?branch=${encodeURIComponent(b)}`}
-              className={
-                b === ref
-                  ? "rounded-md bg-zinc-900 px-2 py-1 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-              }
+              href={`/${owner}/${name}/upload`}
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
-              {b}
+              Upload files
             </Link>
-          ))}
-        </section>
-      )}
+            <CodeDropdown cloneURL={cloneURL} />
+          </div>
+        </div>
 
       {isEmpty ? (
-        <section className="rounded-md border border-zinc-200 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-          This repository is empty. Push your first commit to see files here.
+        <section className="rounded-md border border-zinc-200 p-6 dark:border-zinc-800">
+          <h2 className="text-base font-medium">Quick start</h2>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            This repository is empty. Push your first commit, or upload files
+            to get started.
+          </p>
+          <pre className="mt-4 overflow-x-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950">
+            git clone {cloneURL}
+          </pre>
         </section>
       ) : (
         <section className="rounded-md border border-zinc-200 dark:border-zinc-800">
