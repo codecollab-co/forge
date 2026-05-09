@@ -37,10 +37,39 @@ export type Repo = {
   clone_url: string;
 };
 
+export type TreeEntry = {
+  path: string;
+  type: "blob" | "tree";
+  mode: string;
+  oid: string;
+};
+
+export type Branches = {
+  default: string;
+  branches: string[] | null;
+};
+
+export type GitSecretInfo = {
+  exists: boolean;
+  created_at: string | null;
+  last_used_at: string | null;
+  username: string;
+};
+
 export const api = {
   me: () => request<Me>("GET", "/me"),
   listRepos: () => request<Repo[]>("GET", "/repos"),
   createRepo: (input: { name: string; description?: string; visibility?: "public" | "private" }) =>
     request<Repo>("POST", "/repos", input),
   getRepo: (owner: string, name: string) => request<Repo>("GET", `/repos/${owner}/${name}`),
+  getBranches: (owner: string, name: string) =>
+    request<Branches>("GET", `/repos/${owner}/${name}/branches`),
+  getTree: (owner: string, name: string, ref: string, dir = "") =>
+    request<TreeEntry[]>(
+      "GET",
+      `/repos/${owner}/${name}/tree/${encodeURIComponent(ref)}?path=${encodeURIComponent(dir)}`,
+    ),
+  getGitSecretInfo: () => request<GitSecretInfo>("GET", "/me/git-secret"),
+  generateGitSecret: () =>
+    request<{ username: string; secret: string }>("POST", "/me/git-secret"),
 };

@@ -7,4 +7,5 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/supertokens/supertokens-golang v0.25.1
+	golang.org/x/crypto v0.28.0
 )

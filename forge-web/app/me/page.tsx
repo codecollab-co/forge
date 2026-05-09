@@ -57,12 +57,20 @@ export default function MePage() {
           <p className="text-xs uppercase tracking-wide text-zinc-400">via {me.provider}</p>
         </section>
       )}
-      <button
-        onClick={onSignOut}
-        className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-      >
-        Sign out
-      </button>
+      <div className="flex gap-3">
+        <a
+          href="/me/git-secret"
+          className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          Manage git secret
+        </a>
+        <button
+          onClick={onSignOut}
+          className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          Sign out
+        </button>
+      </div>
     </main>
   );
 }

@@ -69,7 +69,7 @@ func main() {
 		log.Fatalf("supertokens init: %v", err)
 	}
 
-	gitHTTP := &githttp.Handler{Repos: reposStore, GitStorage: gitStorage}
+	gitHTTP := &githttp.Handler{Repos: reposStore, Users: usersRepo, GitStorage: gitStorage}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -200,6 +200,117 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, repoResponse(repo, repo.OwnerHandle))
 	})
+
+	r.Get("/repos/{owner}/{name}/branches", func(w http.ResponseWriter, req *http.Request) {
+		owner := chi.URLParam(req, "owner")
+		name := chi.URLParam(req, "name")
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
+		if err != nil {
+			if errors.Is(err, repos.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		def, _ := gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
+		branches, _ := gitStorage.ListBranches(req.Context(), repo.OwnerHandle, repo.Name)
+		writeJSON(w, http.StatusOK, map[string]any{"default": def, "branches": branches})
+	})
+
+	r.Get("/repos/{owner}/{name}/tree/{ref}", func(w http.ResponseWriter, req *http.Request) {
+		owner := chi.URLParam(req, "owner")
+		name := chi.URLParam(req, "name")
+		ref := chi.URLParam(req, "ref")
+		dir := strings.TrimPrefix(req.URL.Query().Get("path"), "/")
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
+		if err != nil {
+			if errors.Is(err, repos.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		entries, err := gitStorage.ReadTree(req.Context(), repo.OwnerHandle, repo.Name, ref, dir)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, map[string]any{
+				"path": e.Path, "type": e.Type, "mode": e.Mode, "oid": e.OID,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	r.Get("/repos/{owner}/{name}/blob/{ref}", func(w http.ResponseWriter, req *http.Request) {
+		owner := chi.URLParam(req, "owner")
+		name := chi.URLParam(req, "name")
+		ref := chi.URLParam(req, "ref")
+		path := strings.TrimPrefix(req.URL.Query().Get("path"), "/")
+		if path == "" {
+			http.Error(w, "missing path", http.StatusBadRequest)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
+		if err != nil {
+			if errors.Is(err, repos.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		blob, err := gitStorage.ReadBlob(req.Context(), repo.OwnerHandle, repo.Name, ref, path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if blob == nil {
+			http.NotFound(w, req)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(blob)
+	})
+
+	r.Get("/me/git-secret", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		info, err := usersRepo.GitSecretInfo(req.Context(), u.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exists":       info.Exists,
+			"created_at":   info.CreatedAt,
+			"last_used_at": info.LastUsedAt,
+			"username":     u.Handle,
+		})
+	}))
+
+	r.Post("/me/git-secret", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		secret, err := usersRepo.GenerateGitSecret(req.Context(), u.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"username": u.Handle, "secret": secret})
+	}))
 
 	// Smart Git HTTP transport — last so it doesn't shadow API routes.
 	// Matches /<owner>/<name>.git/* (git advertises and pushes here).

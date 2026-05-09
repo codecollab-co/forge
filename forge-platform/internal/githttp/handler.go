@@ -1,6 +1,10 @@
 // Package githttp serves the smart-HTTP Git protocol by exec'ing
-// `git http-backend` as a CGI handler. Slice 3: clone (read) only.
-// Slice 4 will require auth on receive-pack (push).
+// `git http-backend` as a CGI handler.
+//
+// Read (clone, fetch): allowed for public repos without auth.
+// Write (push): HTTP Basic auth using the user's git secret (slice 4);
+// proper named/revocable PATs land in slice 12. Authorization is delegated
+// to permissions.PermissionChecker.
 package githttp
 
 import (
@@ -11,11 +15,14 @@ import (
 	"strings"
 
 	"github.com/codecollab-co/forge/forge-platform/internal/git"
+	"github.com/codecollab-co/forge/forge-platform/internal/permissions"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
+	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
 
 type Handler struct {
 	Repos      *repos.Store
+	Users      *users.Repo
 	GitStorage *git.Repository
 }
 
@@ -45,9 +52,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Slice 3 only allows read; push lands in slice 4 with proper auth.
-	if isWriteOp(sub, r.URL.RawQuery) {
-		http.Error(w, "push not yet supported (slice 4)", http.StatusForbidden)
+	write := isWriteOp(sub, r.URL.RawQuery)
+
+	actor, ok := h.authenticate(r)
+	if !ok && (write || repo.Visibility == "private") {
+		w.Header().Set("WWW-Authenticate", `Basic realm="forge"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	resource := permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility}
+	action := permissions.ActionRead
+	if write {
+		action = permissions.ActionPush
+	}
+	if !permissions.Allow(actor, resource, action) {
+		// 404 on private repos to avoid leaking existence; 403 otherwise.
+		if repo.Visibility == "private" && (actor.IsAnonymous || actor.UserID != repo.OwnerID) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -64,9 +89,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"GIT_PROJECT_ROOT=" + h.GitStorage.Path(repo.OwnerHandle, repo.Name),
 			"GIT_HTTP_EXPORT_ALL=1",
 			"PATH_INFO=" + sub,
+			"REMOTE_USER=" + actor.UserID,
 		},
 	}
 	cgiHandler.ServeHTTP(w, r)
+}
+
+// authenticate parses HTTP Basic credentials. Returns (actor, ok). When the
+// header is absent or invalid, ok=false (anonymous).
+func (h *Handler) authenticate(r *http.Request) (permissions.Actor, bool) {
+	handle, secret, hasAuth := r.BasicAuth()
+	if !hasAuth || handle == "" || secret == "" {
+		return permissions.Actor{IsAnonymous: true}, false
+	}
+	user, err := h.Users.VerifyGitSecret(r.Context(), handle, secret)
+	if err != nil || user == nil {
+		return permissions.Actor{IsAnonymous: true}, false
+	}
+	return permissions.Actor{UserID: user.ID}, true
 }
 
 func splitGitPath(p string) (owner, name, sub string, ok bool) {

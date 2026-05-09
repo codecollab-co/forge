@@ -115,3 +115,94 @@ func (r *Repository) ListRefs(ctx context.Context, owner, name string) ([]Ref, e
 	}
 	return refs, nil
 }
+
+// DefaultBranch returns the short branch name HEAD points at.
+// Empty string + nil error if the repo has no commits yet.
+func (r *Repository) DefaultBranch(ctx context.Context, owner, name string) (string, error) {
+	if !r.Exists(owner, name) {
+		return "", ErrNotFound
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "symbolic-ref", "--short", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (r *Repository) ListBranches(ctx context.Context, owner, name string) ([]string, error) {
+	if !r.Exists(owner, name) {
+		return nil, ErrNotFound
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
+}
+
+type TreeEntry struct {
+	Mode string
+	Type string // "blob" or "tree"
+	OID  string
+	Path string
+}
+
+// ReadTree returns the entries directly under `dir` at the given ref. Use
+// dir == "" for the repository root.
+func (r *Repository) ReadTree(ctx context.Context, owner, name, ref, dir string) ([]TreeEntry, error) {
+	if !r.Exists(owner, name) {
+		return nil, ErrNotFound
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	target := ref + ":" + dir
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "ls-tree", "--full-name", "-z", target)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil // no commits yet, or path doesn't exist
+	}
+	var entries []TreeEntry
+	for _, raw := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if raw == "" {
+			continue
+		}
+		// "<mode> <type> <oid>\t<path>"
+		tab := strings.IndexByte(raw, '\t')
+		if tab < 0 {
+			continue
+		}
+		head, path := raw[:tab], raw[tab+1:]
+		fields := strings.Fields(head)
+		if len(fields) != 3 {
+			continue
+		}
+		entries = append(entries, TreeEntry{Mode: fields[0], Type: fields[1], OID: fields[2], Path: path})
+	}
+	return entries, nil
+}
+
+// ReadBlob returns the contents of `path` at the given ref. Returns nil
+// + nil error if the path doesn't exist.
+func (r *Repository) ReadBlob(ctx context.Context, owner, name, ref, path string) ([]byte, error) {
+	if !r.Exists(owner, name) {
+		return nil, ErrNotFound
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Path(owner, name), "cat-file", "-p", ref+":"+path)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil
+	}
+	return out, nil
+}
