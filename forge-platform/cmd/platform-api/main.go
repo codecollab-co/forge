@@ -21,6 +21,7 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/eventbus"
 	gitstorage "github.com/codecollab-co/forge/forge-platform/internal/git"
 	"github.com/codecollab-co/forge/forge-platform/internal/githttp"
+	"github.com/codecollab-co/forge/forge-platform/internal/issues"
 	"github.com/codecollab-co/forge/forge-platform/internal/permissions"
 	"github.com/codecollab-co/forge/forge-platform/internal/pulls"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
@@ -53,6 +54,7 @@ func main() {
 	usersRepo := users.NewRepo(pool)
 	reposStore := repos.NewStore(pool)
 	pullsStore := pulls.NewStore(pool)
+	issuesStore := issues.NewStore(pool)
 
 	gitStorage, err := gitstorage.New(reposDir)
 	if err != nil {
@@ -555,6 +557,151 @@ func main() {
 		})
 	}))
 
+	// ---- Issues ---------------------------------------------------------
+
+	r.Post("/repos/{owner}/{name}/issues", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+			permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+			permissions.ActionRead) {
+			http.NotFound(w, req)
+			return
+		}
+
+		var body struct {
+			Title          string `json:"title"`
+			Body           string `json:"body"`
+			AssigneeUserID string `json:"assignee_user_id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		body.Title = strings.TrimSpace(body.Title)
+		if body.Title == "" {
+			http.Error(w, "title is required", http.StatusBadRequest)
+			return
+		}
+
+		iss, err := issuesStore.Create(req.Context(), issues.CreateInput{
+			RepoID: repo.ID, AuthorID: actor.ID,
+			Title: body.Title, Body: body.Body, AssigneeUserID: body.AssigneeUserID,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusCreated, issueResponse(iss))
+	}))
+
+	r.Get("/repos/{owner}/{name}/issues", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		state := issues.State(req.URL.Query().Get("state"))
+		list, err := issuesStore.ListByRepo(req.Context(), repo.ID, state)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, iss := range list {
+			out = append(out, issueResponse(iss))
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	r.Get("/repos/{owner}/{name}/issues/{number}", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		iss, err := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, issues.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		comments, _ := issuesStore.ListComments(req.Context(), iss.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"issue":    issueResponse(iss),
+			"comments": issueCommentResponses(comments),
+		})
+	})
+
+	r.Post("/repos/{owner}/{name}/issues/{number}/comments", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		iss, err := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, issues.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var body struct{ Body string `json:"body"` }
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Body) == "" {
+			http.Error(w, "body is required", http.StatusBadRequest)
+			return
+		}
+		c, err := issuesStore.AddComment(req.Context(), iss.ID, actor.ID, body.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		c.AuthorHandle = &actor.Handle
+		writeJSON(w, http.StatusCreated, issueCommentResponse(c))
+	}))
+
+	r.Post("/repos/{owner}/{name}/issues/{number}/close", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		issueStateChange(w, req, usersRepo, reposStore, issuesStore, "close")
+	}))
+	r.Post("/repos/{owner}/{name}/issues/{number}/reopen", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		issueStateChange(w, req, usersRepo, reposStore, issuesStore, "reopen")
+	}))
+
 	// Smart Git HTTP transport — last so it doesn't shadow API routes.
 	// Matches /<owner>/<name>.git/* (git advertises and pushes here).
 	r.Handle("/{owner}/{name}.git/*", gitHTTP)
@@ -618,6 +765,105 @@ func commentResponses(cs []*pulls.Comment) []map[string]any {
 		out = append(out, commentResponse(c))
 	}
 	return out
+}
+
+func issueResponse(i *issues.Issue) map[string]any {
+	out := map[string]any{
+		"id":         i.ID,
+		"number":     i.Number,
+		"title":      i.Title,
+		"body":       i.Body,
+		"state":      i.State,
+		"author":     derefString(i.AuthorHandle),
+		"created_at": i.CreatedAt,
+		"closed_at":  i.ClosedAt,
+	}
+	if kind := i.AssigneeKind(); kind != "" {
+		out["assignee"] = map[string]any{
+			"kind":   string(kind),
+			"id":     derefString(i.AssigneeUserID),
+			"handle": derefString(i.AssigneeUserHandle),
+		}
+	} else {
+		out["assignee"] = nil
+	}
+	return out
+}
+
+func issueCommentResponse(c *issues.Comment) map[string]any {
+	return map[string]any{
+		"id":         c.ID,
+		"body":       c.Body,
+		"author":     derefString(c.AuthorHandle),
+		"created_at": c.CreatedAt,
+	}
+}
+
+func issueCommentResponses(cs []*issues.Comment) []map[string]any {
+	out := make([]map[string]any, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, issueCommentResponse(c))
+	}
+	return out
+}
+
+func issueStateChange(
+	w http.ResponseWriter, req *http.Request,
+	usersRepo *users.Repo, reposStore *repos.Store, issuesStore *issues.Store,
+	op string,
+) {
+	stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+	actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+	if err != nil || actor == nil {
+		http.Error(w, "user not provisioned", http.StatusUnauthorized)
+		return
+	}
+	repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+	if err != nil {
+		httpRepoErr(w, err)
+		return
+	}
+	number, err := strconv.Atoi(chi.URLParam(req, "number"))
+	if err != nil {
+		http.Error(w, "invalid number", http.StatusBadRequest)
+		return
+	}
+	iss, err := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+	if err != nil {
+		if errors.Is(err, issues.ErrNotFound) {
+			http.NotFound(w, req)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Only the repo owner or the issue author may close/reopen.
+	authorIsActor := iss.AuthorID != nil && *iss.AuthorID == actor.ID
+	if !(authorIsActor || actor.ID == repo.OwnerID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	switch op {
+	case "close":
+		err = issuesStore.Close(req.Context(), iss.ID, actor.ID)
+	case "reopen":
+		err = issuesStore.Reopen(req.Context(), iss.ID)
+	}
+	if err != nil {
+		if errors.Is(err, issues.ErrNotFound) {
+			// state already correct (e.g., trying to close an already-closed issue)
+			http.Error(w, "no state change applied", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Re-fetch to return the updated issue.
+	updated, _ := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+	writeJSON(w, http.StatusOK, issueResponse(updated))
 }
 
 func meResponse(u *users.User) map[string]any {

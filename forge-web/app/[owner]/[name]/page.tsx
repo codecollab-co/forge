@@ -81,6 +81,12 @@ export default async function RepoPage({ params, searchParams }: Props) {
 
       <nav className="flex gap-3 text-sm">
         <Link
+          href={`/${owner}/${name}/issues`}
+          className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          Issues
+        </Link>
+        <Link
           href={`/${owner}/${name}/pulls`}
           className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
