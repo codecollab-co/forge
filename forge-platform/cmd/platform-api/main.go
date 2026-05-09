@@ -423,8 +423,11 @@ func main() {
 			httpRepoErr(w, err)
 			return
 		}
-		if actor.ID != repo.OwnerID {
-			http.Error(w, "forbidden", http.StatusForbidden)
+		// Read access required (private repos: owner only).
+		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+			permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+			permissions.ActionRead) {
+			http.NotFound(w, req)
 			return
 		}
 		if err := req.ParseMultipartForm(50 << 20); err != nil {
@@ -440,37 +443,81 @@ func main() {
 			http.Error(w, "no files in upload", http.StatusBadRequest)
 			return
 		}
+		// Form fields (multipart, alongside the file parts).
+		commitSubject := strings.TrimSpace(req.FormValue("commit_subject"))
+		commitBody := req.FormValue("commit_body")
+		commitMode := req.FormValue("commit_mode") // "direct" | "branch"
+		branchName := strings.TrimSpace(req.FormValue("branch_name"))
+		if commitSubject == "" {
+			commitSubject = "Add " + strconv.Itoa(len(files)) + " file(s)"
+		}
+		fullMessage := commitSubject
+		if commitBody != "" {
+			fullMessage += "\n\n" + commitBody
+		}
 
-		// Existing repo: land on a new branch + open a PR.
 		baseBranch, _ := gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
-		// DefaultBranch returns the symbolic ref name even on a fresh bare
-		// repo with no commits. Treat "branch exists symbolically but has no
-		// commits" as empty so we commit straight to main rather than open a
-		// PR no one can merge.
 		if baseBranch != "" {
 			if oid, _ := gitStorage.BranchOID(req.Context(), repo.OwnerHandle, repo.Name, baseBranch); oid == "" {
 				baseBranch = ""
 			}
 		}
+
+		identity := gitstorage.Identity{
+			Name:  actor.Handle,
+			Email: ifEmpty(actor.Email, actor.Handle+"@forge.local"),
+		}
+
+		// Empty repo: only "direct" makes sense. Commit to main, no PR.
 		if baseBranch == "" {
-			// Empty repo — commit directly to main.
 			oid, err := gitStorage.CreateCommit(req.Context(),
-				repo.OwnerHandle, repo.Name, "main", "main", files,
-				gitstorage.Identity{Name: actor.Handle, Email: ifEmpty(actor.Email, actor.Handle+"@forge.local")},
-				"Upload "+strconv.Itoa(len(files))+" files",
+				repo.OwnerHandle, repo.Name, "main", "main", files, identity, fullMessage,
 			)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, http.StatusCreated, map[string]any{"branch": "main", "commit_oid": oid, "pr_number": 0})
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"branch": "main", "commit_oid": oid, "pr_number": 0,
+			})
 			return
 		}
-		branch := "upload/" + time.Now().UTC().Format("20060102-150405")
+
+		// Direct mode requires push permission (i.e. owner at MVP).
+		if commitMode == "direct" {
+			if !permissions.Allow(permissions.Actor{UserID: actor.ID},
+				permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility},
+				permissions.ActionPush) {
+				http.Error(w, "only the repository owner can commit directly to "+baseBranch, http.StatusForbidden)
+				return
+			}
+			oid, err := gitStorage.CreateCommit(req.Context(),
+				repo.OwnerHandle, repo.Name, baseBranch, baseBranch, files, identity, fullMessage,
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"branch": baseBranch, "commit_oid": oid, "pr_number": 0,
+			})
+			return
+		}
+
+		// Branch + PR mode (default).
+		if branchName == "" {
+			branchName = actor.Handle + "-patch-1"
+		}
+		if err := gitstorage.ValidateOwnerOrName(branchName); err != nil {
+			http.Error(w, "invalid branch name", http.StatusBadRequest)
+			return
+		}
+		if oid, _ := gitStorage.BranchOID(req.Context(), repo.OwnerHandle, repo.Name, branchName); oid != "" {
+			http.Error(w, "branch already exists — pick another name", http.StatusConflict)
+			return
+		}
 		oid, err := gitStorage.CreateCommit(req.Context(),
-			repo.OwnerHandle, repo.Name, branch, baseBranch, files,
-			gitstorage.Identity{Name: actor.Handle, Email: ifEmpty(actor.Email, actor.Handle+"@forge.local")},
-			"Upload "+strconv.Itoa(len(files))+" files",
+			repo.OwnerHandle, repo.Name, branchName, baseBranch, files, identity, fullMessage,
 		)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -478,9 +525,8 @@ func main() {
 		}
 		pr, err := pullsStore.Create(req.Context(), pulls.CreateInput{
 			RepoID: repo.ID, AuthorID: actor.ID,
-			Title: "Upload " + strconv.Itoa(len(files)) + " files",
-			Body:  "_Uploaded via the web UI._",
-			HeadBranch: branch, BaseBranch: baseBranch,
+			Title: commitSubject, Body: commitBody,
+			HeadBranch: branchName, BaseBranch: baseBranch,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -488,10 +534,10 @@ func main() {
 		}
 		_ = bus.Publish(req.Context(), "pr.opened", map[string]any{
 			"v": 1, "pr_id": pr.ID, "repo_id": repo.ID, "number": pr.Number,
-			"author_id": actor.ID, "head": branch, "base": baseBranch,
+			"author_id": actor.ID, "head": branchName, "base": baseBranch,
 		})
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"branch": branch, "commit_oid": oid, "pr_number": pr.Number,
+			"branch": branchName, "commit_oid": oid, "pr_number": pr.Number,
 		})
 	}))
 
@@ -979,9 +1025,17 @@ func main() {
 			return
 		}
 
-		// Auto-delete throwaway head branches that we own the naming for.
-		// Human-named branches stay until the user deletes them.
-		if strings.HasPrefix(pr.HeadBranch, "upload/") || strings.HasPrefix(pr.HeadBranch, "forge-agent/") {
+		// Auto-delete head branch:
+		//  - forge-agent/*: always (orchestrator path, no UI)
+		//  - everything else: only if the merge request asked for it
+		var mergeReq struct {
+			DeleteBranch bool `json:"delete_branch"`
+		}
+		if req.ContentLength > 0 {
+			_ = json.NewDecoder(req.Body).Decode(&mergeReq)
+		}
+		shouldDelete := mergeReq.DeleteBranch || strings.HasPrefix(pr.HeadBranch, "forge-agent/")
+		if shouldDelete {
 			if err := gitStorage.DeleteBranch(req.Context(), repo.OwnerHandle, repo.Name, pr.HeadBranch); err != nil {
 				log.Printf("auto-delete %s/%s/%s: %v", repo.OwnerHandle, repo.Name, pr.HeadBranch, err)
 			}

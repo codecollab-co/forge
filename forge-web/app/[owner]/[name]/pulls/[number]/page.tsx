@@ -13,6 +13,7 @@ export default function PullDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleteBranchOnMerge, setDeleteBranchOnMerge] = useState(true);
 
   async function reload() {
     setDetail(await api.getPull(params.owner, params.name, number));
@@ -57,7 +58,7 @@ export default function PullDetailPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.mergePull(params.owner, params.name, number);
+      await api.mergePull(params.owner, params.name, number, { delete_branch: deleteBranchOnMerge });
       router.push(`/${params.owner}/${params.name}`);
       router.refresh();
     } catch (err) {
@@ -86,13 +87,23 @@ export default function PullDetailPage() {
       {error && <p className="text-red-600">Error: {error}</p>}
 
       {pr.state === "open" && (
-        <button
-          onClick={merge}
-          disabled={busy}
-          className="rounded-md bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
-        >
-          {busy ? "Merging…" : "Merge pull request"}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={merge}
+            disabled={busy}
+            className="rounded-md bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {busy ? "Merging…" : "Merge pull request"}
+          </button>
+          <label className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+            <input
+              type="checkbox"
+              checked={deleteBranchOnMerge}
+              onChange={(e) => setDeleteBranchOnMerge(e.target.checked)}
+            />
+            Delete <code>{pr.head_branch}</code> after merge
+          </label>
+        </div>
       )}
       {pr.state === "merged" && pr.merge_commit_oid && (
         <p className="text-sm text-zinc-600 dark:text-zinc-400">

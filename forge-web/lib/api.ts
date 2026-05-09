@@ -161,12 +161,21 @@ export const api = {
     });
     if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}`);
   },
-  uploadFiles: async (owner: string, name: string, files: File[]) => {
+  uploadFiles: async (
+    owner: string,
+    name: string,
+    files: File[],
+    opts: { commit_subject?: string; commit_body?: string; commit_mode?: "direct" | "branch"; branch_name?: string } = {},
+  ) => {
     const fd = new FormData();
     for (const f of files) {
       const path = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
       fd.append(path, f, f.name);
     }
+    if (opts.commit_subject) fd.append("commit_subject", opts.commit_subject);
+    if (opts.commit_body) fd.append("commit_body", opts.commit_body);
+    if (opts.commit_mode) fd.append("commit_mode", opts.commit_mode);
+    if (opts.branch_name) fd.append("branch_name", opts.branch_name);
     const res = await fetch(`${apiDomain}/repos/${owner}/${name}/upload`, {
       method: "POST",
       credentials: "include",
@@ -222,10 +231,11 @@ export const api = {
     request<PullDetail>("GET", `/repos/${owner}/${name}/pulls/${number}`),
   addPullComment: (owner: string, name: string, number: number, body: string) =>
     request<PullComment>("POST", `/repos/${owner}/${name}/pulls/${number}/comments`, { body }),
-  mergePull: (owner: string, name: string, number: number) =>
+  mergePull: (owner: string, name: string, number: number, opts: { delete_branch?: boolean } = {}) =>
     request<{ merge_commit_oid: string; state: string }>(
       "POST",
       `/repos/${owner}/${name}/pulls/${number}/merge`,
+      opts,
     ),
 
   listIssues: (owner: string, name: string, state?: IssueState) =>
