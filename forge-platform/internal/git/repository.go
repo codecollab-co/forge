@@ -310,6 +310,84 @@ func (r *Repository) MergeBranches(
 
 var ErrMergeConflict = errors.New("merge conflict")
 
+// MoveOwner relocates every repository under `oldOwner/` on disk to
+// `newOwner/`. Called when a user renames their handle.
+func (r *Repository) MoveOwner(ctx context.Context, oldOwner, newOwner string) error {
+	if err := ValidateOwnerOrName(oldOwner); err != nil {
+		return err
+	}
+	if err := ValidateOwnerOrName(newOwner); err != nil {
+		return err
+	}
+	oldPath := filepath.Join(r.root, oldOwner)
+	newPath := filepath.Join(r.root, newOwner)
+	if _, err := os.Stat(oldPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return errors.New("destination owner directory already exists")
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+// RenameRepo moves /<owner>/<oldName>.git to /<owner>/<newName>.git.
+func (r *Repository) RenameRepo(ctx context.Context, owner, oldName, newName string) error {
+	if err := ValidateOwnerOrName(owner); err != nil {
+		return err
+	}
+	if err := ValidateOwnerOrName(newName); err != nil {
+		return err
+	}
+	oldPath := r.Path(owner, oldName)
+	newPath := r.Path(owner, newName)
+	if _, err := os.Stat(newPath); err == nil {
+		return errors.New("destination repo already exists")
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+// DeleteRepo removes the on-disk repo storage. Idempotent.
+func (r *Repository) DeleteRepo(ctx context.Context, owner, name string) error {
+	if err := ValidateOwnerOrName(owner); err != nil {
+		return err
+	}
+	if err := ValidateOwnerOrName(name); err != nil {
+		return err
+	}
+	return os.RemoveAll(r.Path(owner, name))
+}
+
+// CloneFromURL mirrors a remote repository into the on-disk bare layout.
+// Used by "Import from Git URL". Times out after 5 minutes.
+func (r *Repository) CloneFromURL(ctx context.Context, owner, name, sourceURL string) error {
+	if err := ValidateOwnerOrName(owner); err != nil {
+		return err
+	}
+	if err := ValidateOwnerOrName(name); err != nil {
+		return err
+	}
+	path := r.Path(owner, name)
+	if _, err := os.Stat(path); err == nil {
+		return ErrAlreadyExists
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", "--", sourceURL, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.RemoveAll(path)
+		return fmt.Errorf("git clone --bare: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	cfg := exec.CommandContext(ctx, "git", "-C", path, "config", "http.receivepack", "true")
+	if out, err := cfg.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // FileChange describes a single file write inside a CreateCommit.
 type FileChange struct {
 	Path    string // forward-slash relative path

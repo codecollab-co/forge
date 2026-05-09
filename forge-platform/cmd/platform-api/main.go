@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -120,6 +122,7 @@ func main() {
 		}
 		var body struct {
 			DisplayName *string `json:"display_name"`
+			Handle      *string `json:"handle"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
@@ -132,6 +135,31 @@ func main() {
 			); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			}
+		}
+		if body.Handle != nil {
+			newHandle := strings.ToLower(strings.TrimSpace(*body.Handle))
+			if newHandle != u.Handle {
+				if err := gitstorage.ValidateOwnerOrName(newHandle); err != nil {
+					http.Error(w, "invalid handle", http.StatusBadRequest)
+					return
+				}
+				ok, err := usersRepo.HandleAvailable(req.Context(), newHandle)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if !ok {
+					http.Error(w, "handle is taken", http.StatusConflict)
+					return
+				}
+				if err := usersRepo.RenameHandle(req.Context(), u.ID, newHandle); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if err := gitStorage.MoveOwner(req.Context(), u.Handle, newHandle); err != nil {
+					log.Printf("MoveOwner %s -> %s: %v", u.Handle, newHandle, err)
+				}
 			}
 		}
 		fresh, _ := usersRepo.BySuperTokensID(req.Context(), stID)
@@ -190,6 +218,7 @@ func main() {
 			Description string `json:"description"`
 			Visibility  string `json:"visibility"`
 			InitReadme  bool   `json:"init_readme"`
+			ImportURL   string `json:"import_url"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
@@ -220,6 +249,18 @@ func main() {
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if body.ImportURL != "" {
+			ctx, cancel := context.WithTimeout(req.Context(), 5*time.Minute)
+			defer cancel()
+			if err := gitStorage.CloneFromURL(ctx, u.Handle, body.Name, body.ImportURL); err != nil {
+				_ = reposStore.Delete(req.Context(), row.ID)
+				http.Error(w, "import failed: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusCreated, repoResponse(row, u.Handle))
 			return
 		}
 
@@ -287,6 +328,163 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, repoResponse(repo, repo.OwnerHandle))
 	})
+
+	r.Patch("/repos/{owner}/{name}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if actor.ID != repo.OwnerID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Description *string `json:"description"`
+			Visibility  *string `json:"visibility"`
+			Name        *string `json:"name"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		var newName *string
+		if body.Name != nil {
+			n := strings.ToLower(strings.TrimSpace(*body.Name))
+			if n != repo.Name {
+				if err := gitstorage.ValidateOwnerOrName(n); err != nil {
+					http.Error(w, "invalid name", http.StatusBadRequest)
+					return
+				}
+				newName = &n
+			}
+		}
+		if body.Visibility != nil && *body.Visibility != "public" && *body.Visibility != "private" {
+			http.Error(w, "invalid visibility", http.StatusBadRequest)
+			return
+		}
+		if err := reposStore.Update(req.Context(), repo.ID, repos.UpdateInput{
+			Description: body.Description,
+			Visibility:  body.Visibility,
+			Name:        newName,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if newName != nil {
+			if err := gitStorage.RenameRepo(req.Context(), repo.OwnerHandle, repo.Name, *newName); err != nil {
+				log.Printf("RenameRepo failed: %v", err)
+			}
+		}
+		fresh, _ := reposStore.GetByOwnerHandleAndName(req.Context(),
+			repo.OwnerHandle, ifNotNil(newName, repo.Name))
+		writeJSON(w, http.StatusOK, repoResponse(fresh, fresh.OwnerHandle))
+	}))
+
+	r.Delete("/repos/{owner}/{name}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if actor.ID != repo.OwnerID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := reposStore.Delete(req.Context(), repo.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = gitStorage.DeleteRepo(req.Context(), repo.OwnerHandle, repo.Name)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	r.Post("/repos/{owner}/{name}/upload", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if actor.ID != repo.OwnerID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := req.ParseMultipartForm(50 << 20); err != nil {
+			http.Error(w, "upload too large or malformed (50 MB cap)", http.StatusBadRequest)
+			return
+		}
+		files, err := readMultipartFiles(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(files) == 0 {
+			http.Error(w, "no files in upload", http.StatusBadRequest)
+			return
+		}
+
+		// Existing repo: land on a new branch + open a PR.
+		baseBranch, _ := gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
+		if baseBranch == "" {
+			// Empty repo — commit directly to main.
+			oid, err := gitStorage.CreateCommit(req.Context(),
+				repo.OwnerHandle, repo.Name, "main", "main", files,
+				gitstorage.Identity{Name: actor.Handle, Email: ifEmpty(actor.Email, actor.Handle+"@forge.local")},
+				"Upload "+strconv.Itoa(len(files))+" files",
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"branch": "main", "commit_oid": oid, "pr_number": 0})
+			return
+		}
+		branch := "upload/" + time.Now().UTC().Format("20060102-150405")
+		oid, err := gitStorage.CreateCommit(req.Context(),
+			repo.OwnerHandle, repo.Name, branch, baseBranch, files,
+			gitstorage.Identity{Name: actor.Handle, Email: ifEmpty(actor.Email, actor.Handle+"@forge.local")},
+			"Upload "+strconv.Itoa(len(files))+" files",
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		pr, err := pullsStore.Create(req.Context(), pulls.CreateInput{
+			RepoID: repo.ID, AuthorID: actor.ID,
+			Title: "Upload " + strconv.Itoa(len(files)) + " files",
+			Body:  "_Uploaded via the web UI._",
+			HeadBranch: branch, BaseBranch: baseBranch,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = bus.Publish(req.Context(), "pr.opened", map[string]any{
+			"v": 1, "pr_id": pr.ID, "repo_id": repo.ID, "number": pr.Number,
+			"author_id": actor.ID, "head": branch, "base": baseBranch,
+		})
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"branch": branch, "commit_oid": oid, "pr_number": pr.Number,
+		})
+	}))
 
 	r.Get("/repos/{owner}/{name}/branches", func(w http.ResponseWriter, req *http.Request) {
 		owner := chi.URLParam(req, "owner")
@@ -1183,6 +1381,48 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func ifEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func ifNotNil(s *string, fallback string) string {
+	if s == nil {
+		return fallback
+	}
+	return *s
+}
+
+func readMultipartFiles(req *http.Request) ([]gitstorage.FileChange, error) {
+	out := make([]gitstorage.FileChange, 0, 64)
+	for path, headers := range req.MultipartForm.File {
+		// Skip dot-paths and traversal attempts.
+		if path == "" || strings.Contains(path, "..") || strings.HasPrefix(path, "/") {
+			continue
+		}
+		// Skip .git internals — caller is uploading source files, not a
+		// pre-existing Git directory.
+		if strings.HasPrefix(path, ".git/") || path == ".git" {
+			continue
+		}
+		for _, header := range headers {
+			f, err := header.Open()
+			if err != nil {
+				return nil, fmt.Errorf("open part %s: %w", path, err)
+			}
+			content, err := io.ReadAll(f)
+			_ = f.Close()
+			if err != nil {
+				return nil, fmt.Errorf("read part %s: %w", path, err)
+			}
+			out = append(out, gitstorage.FileChange{Path: path, Content: content})
+		}
+	}
+	return out, nil
 }
 
 func httpRepoErr(w http.ResponseWriter, err error) {

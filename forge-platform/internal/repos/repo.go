@@ -102,6 +102,30 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Repository, error) {
 	return r, nil
 }
 
+type UpdateInput struct {
+	Description *string
+	Visibility  *string
+	Name        *string
+}
+
+func (s *Store) Update(ctx context.Context, repoID string, in UpdateInput) error {
+	_, err := s.pool.Exec(ctx, `
+        UPDATE platform.repositories
+           SET description = COALESCE($2, description),
+               visibility  = COALESCE($3, visibility),
+               name        = COALESCE($4, name),
+               updated_at  = NOW()
+         WHERE id = $1
+    `, repoID, in.Description, in.Visibility, in.Name)
+	return err
+}
+
+func (s *Store) Delete(ctx context.Context, repoID string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM platform.repositories WHERE id = $1`, repoID)
+	return err
+}
+
 func (s *Store) GetByOwnerHandleAndName(ctx context.Context, ownerHandle, name string) (*Repository, error) {
 	row := s.pool.QueryRow(ctx, `
         SELECT r.id, r.owner_id, u.handle, r.name, COALESCE(r.description,''), r.visibility, r.created_at, r.updated_at

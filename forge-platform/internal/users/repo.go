@@ -96,6 +96,24 @@ func (r *Repo) BySuperTokensID(ctx context.Context, stID string) (*User, error) 
 	return u, nil
 }
 
+// RenameHandle updates the user's handle. Caller must move on-disk repo
+// storage (GitRepository.MoveOwner) — this only touches the DB row.
+func (r *Repo) RenameHandle(ctx context.Context, userID, newHandle string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE platform.users SET handle = $2, updated_at = NOW() WHERE id = $1`,
+		userID, newHandle,
+	)
+	return err
+}
+
+func (r *Repo) HandleAvailable(ctx context.Context, handle string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM platform.users WHERE handle = $1)`, handle,
+	).Scan(&exists)
+	return !exists, err
+}
+
 var handleSafe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 func (r *Repo) allocateHandle(ctx context.Context, email, displayName, provider, externalID string) (string, error) {

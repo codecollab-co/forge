@@ -125,13 +125,44 @@ export type DashboardRun = {
 
 export const api = {
   me: () => request<Me>("GET", "/me"),
-  updateMe: (patch: { display_name?: string }) =>
+  updateMe: (patch: { display_name?: string; handle?: string }) =>
     request<Me>("PATCH", "/me", patch),
   listMyRuns: () => request<DashboardRun[]>("GET", "/me/runs"),
 
   listRepos: () => request<Repo[]>("GET", "/repos"),
-  createRepo: (input: { name: string; description?: string; visibility?: "public" | "private"; init_readme?: boolean }) =>
-    request<Repo>("POST", "/repos", input),
+  createRepo: (input: {
+    name: string;
+    description?: string;
+    visibility?: "public" | "private";
+    init_readme?: boolean;
+    import_url?: string;
+  }) => request<Repo>("POST", "/repos", input),
+  updateRepo: (
+    owner: string,
+    name: string,
+    patch: { description?: string; visibility?: "public" | "private"; name?: string },
+  ) => request<Repo>("PATCH", `/repos/${owner}/${name}`, patch),
+  deleteRepo: async (owner: string, name: string) => {
+    const res = await fetch(`${apiDomain}/repos/${owner}/${name}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}`);
+  },
+  uploadFiles: async (owner: string, name: string, files: File[]) => {
+    const fd = new FormData();
+    for (const f of files) {
+      const path = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+      fd.append(path, f, f.name);
+    }
+    const res = await fetch(`${apiDomain}/repos/${owner}/${name}/upload`, {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`upload → ${res.status}: ${await res.text()}`);
+    return (await res.json()) as { branch: string; commit_oid: string; pr_number: number };
+  },
   getRepo: (owner: string, name: string) => request<Repo>("GET", `/repos/${owner}/${name}`),
   getBranches: (owner: string, name: string) =>
     request<Branches>("GET", `/repos/${owner}/${name}/branches`),

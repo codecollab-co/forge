@@ -10,6 +10,7 @@ export default function MePage() {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [draftName, setDraftName] = useState("");
+  const [draftHandle, setDraftHandle] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -25,6 +26,7 @@ export default function MePage() {
         const m = await api.me();
         setMe(m);
         setDraftName(m.display_name || "");
+        setDraftHandle(m.handle);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -37,8 +39,11 @@ export default function MePage() {
     setSaving(true);
     setError(null);
     try {
-      const updated = await api.updateMe({ display_name: draftName });
+      const patch: { display_name?: string; handle?: string } = { display_name: draftName };
+      if (draftHandle && draftHandle !== me.handle) patch.handle = draftHandle;
+      const updated = await api.updateMe(patch);
       setMe(updated);
+      setDraftHandle(updated.handle);
       setSavedAt(Date.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -96,12 +101,14 @@ export default function MePage() {
           <div>
             <label className="block text-sm font-medium">Handle</label>
             <input
-              value={me.handle}
-              disabled
-              className="mt-1 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900"
+              value={draftHandle}
+              onChange={(e) => setDraftHandle(e.target.value.toLowerCase())}
+              pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?"
+              className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
             />
             <p className="mt-1 text-xs text-zinc-500">
-              Used in repository URLs (e.g. <code>{me.handle}/your-repo</code>). Renames coming later.
+              Used in repository URLs (e.g. <code>{draftHandle || me.handle}/your-repo</code>).
+              Renaming breaks anyone who has cloned your repos until they update their remotes — there's no redirect yet.
             </p>
           </div>
           <button

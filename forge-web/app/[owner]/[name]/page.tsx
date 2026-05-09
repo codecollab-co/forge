@@ -86,7 +86,15 @@ export default async function RepoPage({ params, searchParams }: Props) {
         <section className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Clone</h2>
-            <CopyButton text={`git clone ${cloneURL}`} />
+            <div className="flex gap-2">
+              <CopyButton text={`git clone ${cloneURL}`} />
+              <Link
+                href={`/${owner}/${name}/upload`}
+                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              >
+                Upload files
+              </Link>
+            </div>
           </div>
           <pre className="overflow-x-auto text-sm">git clone {cloneURL}</pre>
         </section>

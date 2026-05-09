@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Session from "supertokens-auth-react/recipe/session";
 import { api, type GitSecretInfo } from "@/lib/api";
+import { CopyButton } from "@/app/components/CopyButton";
 
 export default function GitSecretPage() {
   const router = useRouter();
@@ -81,17 +82,35 @@ export default function GitSecretPage() {
       </button>
 
       {revealed && (
-        <section className="rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950">
+        <section className="space-y-3 rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950">
           <p className="text-sm font-medium">
-            Copy this now — it won't be shown again.
+            Copy your secret now — it won't be shown again.
           </p>
-          <pre className="mt-2 overflow-x-auto text-sm">
-            git clone https://{revealed.username}:{revealed.secret}@localhost:8080/{revealed.username}/&lt;repo&gt;.git
-          </pre>
-          <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-            Or set <code>git config credential.helper store</code> and let git
-            cache it on first push.
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs uppercase tracking-wide text-amber-900 dark:text-amber-200">
+              Your git secret
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 overflow-x-auto rounded-md border border-amber-200 bg-white px-3 py-2 font-mono text-sm dark:border-amber-800 dark:bg-zinc-900">
+                {revealed.secret}
+              </code>
+              <CopyButton text={revealed.secret} label="Copy secret" />
+            </div>
+          </div>
+          <details className="text-xs text-zinc-600 dark:text-zinc-400">
+            <summary className="cursor-pointer">How do I use this?</summary>
+            <p className="mt-2">
+              Use it as the password when git prompts on push/clone. Username
+              is <code>{revealed.username}</code>. Example one-shot URL:
+            </p>
+            <pre className="mt-1 overflow-x-auto rounded-md border border-amber-200 bg-white px-3 py-2 dark:border-amber-800 dark:bg-zinc-900">
+              git clone https://{revealed.username}:{revealed.secret}@localhost:8080/{revealed.username}/&lt;repo&gt;.git
+            </pre>
+            <p className="mt-2">
+              Or set <code>git config credential.helper store</code> and let
+              git cache it on first push.
+            </p>
+          </details>
         </section>
       )}
     </main>
