@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./forge-platform/migrations/00_bootstrap.sql:/docker-entrypoint-initdb.d/00_bootstrap.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  forge-platform:
+    build:
+      context: ./forge-platform
+    environment:
+      DATABASE_URL: postgres://forge:forge@postgres:5432/forge?sslmode=disable
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  forge-agent:
+    build:
+      context: ./forge-agent
+    environment:
+      DATABASE_URL: postgresql://forge:forge@postgres:5432/forge
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      PORT: "8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  forge-web:
+    build:
+      context: ./forge-web
+    environment:
+      PLATFORM_API_URL: http://forge-platform:8080
+      AGENT_API_URL: http://forge-agent:8081
+    ports:
+      - "3000:3000"
+    depends_on:
+      - forge-platform
+
+volumes:
+  pgdata:

@@ -20,6 +20,25 @@ This is a monorepo. Each top-level service is named like the independent repo it
 - [`forge-web/`](./forge-web/) — TypeScript + Next.js. Product UI.
 - [`forge-infra/`](./forge-infra/) — Terraform. AWS topology.
 
+## Local development
+
+```bash
+# Generate an RS256 keypair and write it to .env
+./scripts/gen-jwt-keys.sh > .env
+
+# Bring up Postgres + all three services
+docker compose up --build
+
+# Verify
+curl http://localhost:8080/healthz                          # platform
+curl http://localhost:8081/healthz                          # agent
+open  http://localhost:3000                                 # web
+
+# Round-trip a ping event through the EventBus
+curl -X POST http://localhost:8080/ping
+docker compose logs forge-agent | grep "event received"
+```
+
 ## License
 
 Apache-2.0. See [`LICENSE`](./LICENSE).
