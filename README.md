@@ -26,7 +26,11 @@ This is a monorepo. Each top-level service is named like the independent repo it
 # Generate an RS256 keypair and write it to .env
 ./scripts/gen-jwt-keys.sh > .env
 
-# Bring up Postgres + all three services
+# Add OAuth provider credentials (slice 2). Append to .env:
+#   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET (callback http://localhost:8080/auth/callback/github)
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (callback http://localhost:8080/auth/callback/google)
+
+# Bring up Postgres + SuperTokens + all three services
 docker compose up --build
 
 # Verify

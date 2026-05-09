@@ -10,11 +10,28 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./forge-platform/migrations/00_bootstrap.sql:/docker-entrypoint-initdb.d/00_bootstrap.sql
+      - ./forge-platform/migrations/01_users.sql:/docker-entrypoint-initdb.d/01_users.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
       interval: 2s
       timeout: 5s
       retries: 10
+
+  supertokens:
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.3
+    environment:
+      POSTGRESQL_CONNECTION_URI: postgresql://forge:forge@postgres:5432/forge
+      POSTGRESQL_TABLE_SCHEMA: supertokens
+    ports:
+      - "3567:3567"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3567 && echo -e 'GET /hello HTTP/1.1\\r\\nhost: 127.0.0.1\\r\\n\\r\\n' >&3 && grep -q Hello <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   forge-platform:
     build:
@@ -23,11 +40,20 @@ services:
       DATABASE_URL: postgres://forge:forge@postgres:5432/forge?sslmode=disable
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      ST_CONNECTION_URI: http://supertokens:3567
+      WEBSITE_DOMAIN: http://localhost:3000
+      API_DOMAIN: http://localhost:8080
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       PORT: "8080"
     ports:
       - "8080:8080"
     depends_on:
       postgres:
+        condition: service_healthy
+      supertokens:
         condition: service_healthy
 
   forge-agent:
@@ -48,7 +74,9 @@ services:
       context: ./forge-web
     environment:
       PLATFORM_API_URL: http://forge-platform:8080
+      NEXT_PUBLIC_PLATFORM_API_URL: http://localhost:8080
       AGENT_API_URL: http://forge-agent:8081
+      NEXT_PUBLIC_WEBSITE_DOMAIN: http://localhost:3000
     ports:
       - "3000:3000"
     depends_on:

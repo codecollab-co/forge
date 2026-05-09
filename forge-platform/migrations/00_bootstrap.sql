@@ -2,6 +2,8 @@
 -- via docker-compose's docker-entrypoint-initdb.d hook. Real migrations move
 -- to atlas in a follow-up.
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS agent;
 

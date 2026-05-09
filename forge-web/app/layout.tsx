@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
+import { Providers } from "./components/Providers";
 
 export const metadata: Metadata = {
   title: "Forge",
@@ -15,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
