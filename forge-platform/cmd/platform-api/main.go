@@ -540,6 +540,109 @@ func main() {
 		writeJSON(w, http.StatusCreated, map[string]any{"name": body.Name, "from": body.From})
 	}))
 
+	r.Patch("/repos/{owner}/{name}/branches/{branch}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if actor.ID != repo.OwnerID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			NewName string `json:"new_name"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if err := gitStorage.RenameBranch(req.Context(), repo.OwnerHandle, repo.Name,
+			chi.URLParam(req, "branch"), strings.TrimSpace(body.NewName)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"new_name": body.NewName})
+	}))
+
+	r.Delete("/repos/{owner}/{name}/branches/{branch}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		if actor.ID != repo.OwnerID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if err := gitStorage.DeleteBranch(req.Context(), repo.OwnerHandle, repo.Name, chi.URLParam(req, "branch")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	r.Get("/repos/{owner}/{name}/commits/{branch}", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
+		commits, err := gitStorage.ListCommits(req.Context(), repo.OwnerHandle, repo.Name, chi.URLParam(req, "branch"), limit, offset)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(commits))
+		for _, c := range commits {
+			out = append(out, map[string]any{
+				"oid": c.OID, "short_oid": c.ShortOID,
+				"author_name": c.AuthorName, "author_email": c.AuthorEmail,
+				"author_date": c.AuthorDate, "subject": c.Subject,
+				"parents": c.Parents,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	r.Get("/repos/{owner}/{name}/commit/{oid}", func(w http.ResponseWriter, req *http.Request) {
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		c, diff, err := gitStorage.GetCommit(req.Context(), repo.OwnerHandle, repo.Name, chi.URLParam(req, "oid"))
+		if err != nil {
+			if errors.Is(err, gitstorage.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"oid": c.OID, "short_oid": c.ShortOID,
+			"author_name": c.AuthorName, "author_email": c.AuthorEmail,
+			"author_date": c.AuthorDate, "subject": c.Subject,
+			"parents": c.Parents,
+			"diff":    string(diff),
+		})
+	})
+
 	r.Get("/repos/{owner}/{name}/branches", func(w http.ResponseWriter, req *http.Request) {
 		owner := chi.URLParam(req, "owner")
 		name := chi.URLParam(req, "name")

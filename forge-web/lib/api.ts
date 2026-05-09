@@ -112,6 +112,18 @@ export type IssueDetail = {
   comments: IssueComment[];
 };
 
+export type Commit = {
+  oid: string;
+  short_oid: string;
+  author_name: string;
+  author_email: string;
+  author_date: string;
+  subject: string;
+  parents: string[];
+};
+
+export type CommitDetail = Commit & { diff: string };
+
 export type DashboardRun = {
   id: string;
   state: "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -168,6 +180,27 @@ export const api = {
     request<Branches>("GET", `/repos/${owner}/${name}/branches`),
   createBranch: (owner: string, name: string, body: { name: string; from?: string }) =>
     request<{ name: string; from: string }>("POST", `/repos/${owner}/${name}/branches`, body),
+  renameBranch: (owner: string, name: string, branch: string, newName: string) =>
+    request<{ new_name: string }>(
+      "PATCH",
+      `/repos/${owner}/${name}/branches/${encodeURIComponent(branch)}`,
+      { new_name: newName },
+    ),
+  deleteBranch: async (owner: string, name: string, branch: string) => {
+    const res = await fetch(
+      `${apiDomain}/repos/${owner}/${name}/branches/${encodeURIComponent(branch)}`,
+      { method: "DELETE", credentials: "include" },
+    );
+    if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}: ${await res.text()}`);
+  },
+
+  listCommits: (owner: string, name: string, branch: string, limit = 50, offset = 0) =>
+    request<Commit[]>(
+      "GET",
+      `/repos/${owner}/${name}/commits/${encodeURIComponent(branch)}?limit=${limit}&offset=${offset}`,
+    ),
+  getCommit: (owner: string, name: string, oid: string) =>
+    request<CommitDetail>("GET", `/repos/${owner}/${name}/commit/${oid}`),
   getTree: (owner: string, name: string, ref: string, dir = "") =>
     request<TreeEntry[]>(
       "GET",

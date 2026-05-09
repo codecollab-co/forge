@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
@@ -123,6 +124,15 @@ export function BranchSwitcher({
               {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
             </div>
           )}
+          <div className="border-t border-zinc-200 dark:border-zinc-800">
+            <Link
+              href={`/${owner}/${name}/branches`}
+              className="block px-3 py-2 text-xs text-zinc-600 hover:bg-zinc-50 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              onClick={() => setOpen(false)}
+            >
+              View all branches →
+            </Link>
+          </div>
         </div>
       )}
     </div>

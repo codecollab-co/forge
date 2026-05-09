@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -136,6 +137,38 @@ func (r *Repository) CreateBranch(ctx context.Context, owner, name, branch, from
 	fromOID := strings.TrimSpace(string(revOut))
 	if out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "update-ref", "refs/heads/"+branch, fromOID).CombinedOutput(); err != nil {
 		return fmt.Errorf("update-ref: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RenameBranch renames refs/heads/<old> to refs/heads/<new>.
+// Refuses to rename the default branch (cleaner than mucking with HEAD).
+func (r *Repository) RenameBranch(ctx context.Context, owner, name, oldBranch, newBranch string) error {
+	if !r.Exists(owner, name) {
+		return ErrNotFound
+	}
+	if err := ValidateOwnerOrName(newBranch); err != nil {
+		return fmt.Errorf("new name: %w", err)
+	}
+	defaultBranch, _ := r.DefaultBranch(ctx, owner, name)
+	if oldBranch == defaultBranch {
+		return errors.New("cannot rename the default branch")
+	}
+	repoPath := r.Path(owner, name)
+	oldOID, _ := r.BranchOID(ctx, owner, name, oldBranch)
+	if oldOID == "" {
+		return errors.New("source branch does not exist")
+	}
+	if oid, _ := r.BranchOID(ctx, owner, name, newBranch); oid != "" {
+		return errors.New("destination branch already exists")
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "update-ref", "refs/heads/"+newBranch, oldOID).CombinedOutput(); err != nil {
+		return fmt.Errorf("update-ref new: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "update-ref", "-d", "refs/heads/"+oldBranch).CombinedOutput(); err != nil {
+		// Best-effort rollback the new ref so we don't end up with both.
+		_, _ = exec.CommandContext(ctx, "git", "-C", repoPath, "update-ref", "-d", "refs/heads/"+newBranch).CombinedOutput()
+		return fmt.Errorf("update-ref -d old: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -357,6 +390,114 @@ func (r *Repository) MergeBranches(
 }
 
 var ErrMergeConflict = errors.New("merge conflict")
+
+type Commit struct {
+	OID         string
+	ShortOID    string
+	AuthorName  string
+	AuthorEmail string
+	AuthorDate  string // ISO 8601
+	Subject     string
+	Parents     []string
+}
+
+// ListCommits returns the linear (--first-parent) history of `ref` so merge
+// commits don't expand into the entire merged history.
+func (r *Repository) ListCommits(ctx context.Context, owner, name, ref string, limit, offset int) ([]Commit, error) {
+	if !r.Exists(owner, name) {
+		return nil, ErrNotFound
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	const sep = "\x1f" // unit separator
+	const recordSep = "\x1e" // record separator
+
+	args := []string{
+		"-C", r.Path(owner, name),
+		"log", "--first-parent",
+		"--max-count=" + strconv.Itoa(limit),
+		"--skip=" + strconv.Itoa(offset),
+		"--format=%H" + sep + "%h" + sep + "%an" + sep + "%ae" + sep + "%aI" + sep + "%P" + sep + "%s" + recordSep,
+		ref,
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil // empty repo / unknown ref: empty list
+	}
+	var commits []Commit
+	for _, raw := range strings.Split(strings.TrimRight(string(out), recordSep+"\n"), recordSep+"\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		parts := strings.SplitN(raw, sep, 7)
+		if len(parts) != 7 {
+			continue
+		}
+		var parents []string
+		if parts[5] != "" {
+			parents = strings.Fields(parts[5])
+		}
+		commits = append(commits, Commit{
+			OID:         parts[0],
+			ShortOID:    parts[1],
+			AuthorName:  parts[2],
+			AuthorEmail: parts[3],
+			AuthorDate:  parts[4],
+			Parents:     parents,
+			Subject:     parts[6],
+		})
+	}
+	return commits, nil
+}
+
+// GetCommit returns metadata + the diff for a single commit. Initial
+// commits (no parent) get the full root tree as the diff.
+func (r *Repository) GetCommit(ctx context.Context, owner, name, oid string) (*Commit, []byte, error) {
+	if !r.Exists(owner, name) {
+		return nil, nil, ErrNotFound
+	}
+	repoPath := r.Path(owner, name)
+	const sep = "\x1f"
+	out, err := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"show", "--no-patch",
+		"--format=%H"+sep+"%h"+sep+"%an"+sep+"%ae"+sep+"%aI"+sep+"%P"+sep+"%s",
+		oid,
+	).Output()
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), sep, 7)
+	if len(parts) != 7 {
+		return nil, nil, fmt.Errorf("malformed show output for %s", oid)
+	}
+	var parents []string
+	if parts[5] != "" {
+		parents = strings.Fields(parts[5])
+	}
+	commit := &Commit{
+		OID: parts[0], ShortOID: parts[1],
+		AuthorName: parts[2], AuthorEmail: parts[3], AuthorDate: parts[4],
+		Parents: parents, Subject: parts[6],
+	}
+	var diffOut []byte
+	if len(parents) == 0 {
+		diffOut, err = exec.CommandContext(ctx, "git", "-C", repoPath,
+			"show", "--format=", commit.OID).Output()
+	} else {
+		diffOut, err = exec.CommandContext(ctx, "git", "-C", repoPath,
+			"diff", parents[0]+".."+commit.OID).Output()
+	}
+	if err != nil {
+		return commit, nil, fmt.Errorf("diff: %w", err)
+	}
+	return commit, diffOut, nil
+}
 
 // MoveOwner relocates every repository under `oldOwner/` on disk to
 // `newOwner/`. Called when a user renames their handle.

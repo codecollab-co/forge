@@ -63,6 +63,7 @@ export default async function RepoPage({ params, searchParams }: Props) {
   const isEmpty = allBranches.length === 0;
 
   const tree = isEmpty ? [] : (await get<TreeEntry[]>(`/repos/${owner}/${name}/tree/${ref}`)) ?? [];
+  const commits = isEmpty ? [] : (await get<{ oid: string }[]>(`/repos/${owner}/${name}/commits/${ref}?limit=200`)) ?? [];
   const readmeEntry = tree.find((e) => e.type === "blob" && e.path.toLowerCase() === "readme.md");
   const readme = readmeEntry
     ? await getText(`/repos/${owner}/${name}/blob/${ref}?path=readme.md`)
@@ -85,18 +86,28 @@ export default async function RepoPage({ params, searchParams }: Props) {
         </header>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {!isEmpty ? (
-            <BranchSwitcher
-              owner={owner}
-              name={name}
-              current={ref}
-              branches={allBranches}
-              defaultBranch={branchesInfo.default || "main"}
-              canCreate={true}
-            />
-          ) : (
-            <span className="text-sm text-zinc-500">No branches yet.</span>
-          )}
+          <div className="flex items-center gap-3">
+            {!isEmpty ? (
+              <BranchSwitcher
+                owner={owner}
+                name={name}
+                current={ref}
+                branches={allBranches}
+                defaultBranch={branchesInfo.default || "main"}
+                canCreate={true}
+              />
+            ) : (
+              <span className="text-sm text-zinc-500">No branches yet.</span>
+            )}
+            {!isEmpty && (
+              <Link
+                href={`/${owner}/${name}/commits/${encodeURIComponent(ref)}`}
+                className="text-sm text-zinc-600 hover:underline dark:text-zinc-400"
+              >
+                {commits.length}{commits.length === 200 ? "+" : ""} commit{commits.length === 1 ? "" : "s"}
+              </Link>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <Link
               href={`/${owner}/${name}/upload`}
