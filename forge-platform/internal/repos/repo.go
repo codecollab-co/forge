@@ -85,6 +85,23 @@ func (s *Store) ListByOwnerID(ctx context.Context, ownerID string) ([]*Repositor
 	return out, rows.Err()
 }
 
+func (s *Store) GetByID(ctx context.Context, id string) (*Repository, error) {
+	row := s.pool.QueryRow(ctx, `
+        SELECT r.id, r.owner_id, u.handle, r.name, COALESCE(r.description,''), r.visibility, r.created_at, r.updated_at
+          FROM platform.repositories r
+          JOIN platform.users u ON u.id = r.owner_id
+         WHERE r.id = $1
+    `, id)
+	r := &Repository{}
+	if err := row.Scan(&r.ID, &r.OwnerID, &r.OwnerHandle, &r.Name, &r.Description, &r.Visibility, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return r, nil
+}
+
 func (s *Store) GetByOwnerHandleAndName(ctx context.Context, ownerHandle, name string) (*Repository, error) {
 	row := s.pool.QueryRow(ctx, `
         SELECT r.id, r.owner_id, u.handle, r.name, COALESCE(r.description,''), r.visibility, r.created_at, r.updated_at

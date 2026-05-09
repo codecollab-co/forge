@@ -163,4 +163,26 @@ export const api = {
     request<Issue>("POST", `/repos/${owner}/${name}/issues/${number}/close`),
   reopenIssue: (owner: string, name: string, number: number) =>
     request<Issue>("POST", `/repos/${owner}/${name}/issues/${number}/reopen`),
+
+  assignAgent: (owner: string, name: string, number: number) =>
+    request<Run>("POST", `/repos/${owner}/${name}/issues/${number}/assign-agent`),
+  getRun: (id: string) => request<Run>("GET", `/runs/${id}`),
+  cancelRun: (id: string) =>
+    request<{ cancel_requested: boolean }>("POST", `/runs/${id}/cancel`),
+};
+
+export type RunState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export type Run = {
+  id: string;
+  state: RunState;
+  cancel_requested: boolean;
+  sandbox_id: string;
+  error_category: string;
+  error_message: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
+  pr_number: string;
 };

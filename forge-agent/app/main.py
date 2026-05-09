@@ -1,9 +1,9 @@
 """forge-agent entry point.
 
-Slice-1 surface:
+Slice-7 surface:
 - GET /healthz             — liveness
-- POST /verify-token       — proves the JWT seam (verifies a token issued by forge-platform)
-- Background consumer      — pulls events from platform.events and logs them
+- POST /verify-token       — verifies a forge-platform JWT (legacy from slice 1)
+- Background consumer      — pulls run.requested events and runs them
 """
 
 from __future__ import annotations
@@ -18,19 +18,49 @@ from pydantic import BaseModel
 
 from app.auth import AuthError, verify
 from app.eventbus import Consumer
+from app.platform_client import PlatformClient
+from app.runner import RunRequest, Runner
+from app.sandbox import from_env as sandbox_from_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("forge-agent")
 
 
-async def _handle(event_type: str, payload: dict) -> None:
-    logger.info("event received type=%s payload=%s", event_type, payload)
+def _build_runner() -> Runner:
+    return Runner(sandboxes=sandbox_from_env(), platform=PlatformClient())
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    runner = _build_runner()
     consumer = Consumer()
-    task = asyncio.create_task(consumer.run(_handle))
+
+    async def handle(event_type: str, payload: dict) -> None:
+        if event_type != "run.requested":
+            logger.debug("ignoring event type=%s", event_type)
+            return
+        if int(payload.get("v", 0)) != 1:
+            logger.warning("ignoring run.requested with unknown version v=%s", payload.get("v"))
+            return
+        try:
+            req = RunRequest(
+                run_id=payload["run_id"],
+                repo_id=payload["repo_id"],
+                repo_owner=payload["repo_owner"],
+                repo_name=payload["repo_name"],
+                issue_id=payload["issue_id"],
+                issue_number=int(payload["issue_number"]),
+                issue_title=payload.get("issue_title", ""),
+                issue_body=payload.get("issue_body", ""),
+                requested_by=payload["requested_by"],
+            )
+        except Exception:
+            logger.exception("malformed run.requested payload: %r", payload)
+            return
+        # Run-per-event in the background so the consumer keeps draining.
+        asyncio.create_task(runner.run(req))
+
+    task = asyncio.create_task(consumer.run(handle))
     try:
         yield
     finally:

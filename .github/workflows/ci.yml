@@ -34,8 +34,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
-      - run: uv sync --no-dev
+      - run: uv sync
       - run: uv run python -c "from app.main import app; print('app imports cleanly')"
+      - run: uv run --with pytest pytest tests/ -q
 
   web:
     name: forge-web

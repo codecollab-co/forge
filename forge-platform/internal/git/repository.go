@@ -309,3 +309,122 @@ func (r *Repository) MergeBranches(
 }
 
 var ErrMergeConflict = errors.New("merge conflict")
+
+// FileChange describes a single file write inside a CreateCommit.
+type FileChange struct {
+	Path    string // forward-slash relative path
+	Content []byte // full file contents
+	Mode    string // "100644" if zero
+}
+
+// CreateCommit writes one or more files on top of the named branch (or
+// creates the branch from baseBranch if it doesn't exist) and produces a
+// single commit. Implemented entirely with plumbing commands so it works on
+// a bare repo without a worktree:
+//
+//   1. hash-object --stdin for each file's content -> blob OIDs
+//   2. start from base tree (read-tree), update-index for each path
+//   3. write-tree -> tree OID
+//   4. commit-tree with parent baseOID -> commit OID
+//   5. update-ref refs/heads/<branch> -> commit OID
+//
+// We use a per-call temporary GIT_INDEX_FILE so concurrent calls don't stomp
+// on each other's index.
+func (r *Repository) CreateCommit(
+	ctx context.Context,
+	owner, name, branch, baseBranch string,
+	files []FileChange,
+	author Identity,
+	message string,
+) (string, error) {
+	if !r.Exists(owner, name) {
+		return "", ErrNotFound
+	}
+	if len(files) == 0 {
+		return "", errors.New("at least one file is required")
+	}
+	repoPath := r.Path(owner, name)
+
+	// Resolve parent OID. If the branch already exists, use it; otherwise
+	// fall back to baseBranch.
+	parentOID, _ := r.BranchOID(ctx, owner, name, branch)
+	if parentOID == "" && baseBranch != "" {
+		parentOID, _ = r.BranchOID(ctx, owner, name, baseBranch)
+	}
+
+	tmpIndex, err := os.CreateTemp("", "forge-index-")
+	if err != nil {
+		return "", err
+	}
+	tmpIndexPath := tmpIndex.Name()
+	_ = tmpIndex.Close()
+	defer os.Remove(tmpIndexPath)
+	// `read-tree` requires the index file to not pre-exist.
+	_ = os.Remove(tmpIndexPath)
+
+	env := append(os.Environ(), "GIT_INDEX_FILE="+tmpIndexPath)
+
+	if parentOID != "" {
+		readTree := exec.CommandContext(ctx, "git", "-C", repoPath, "read-tree", parentOID)
+		readTree.Env = env
+		if out, err := readTree.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("read-tree: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	for _, f := range files {
+		hash := exec.CommandContext(ctx, "git", "-C", repoPath, "hash-object", "-w", "--stdin")
+		hash.Env = env
+		hash.Stdin = strings.NewReader(string(f.Content))
+		oidOut, err := hash.Output()
+		if err != nil {
+			return "", fmt.Errorf("hash-object %s: %w", f.Path, err)
+		}
+		blobOID := strings.TrimSpace(string(oidOut))
+		mode := f.Mode
+		if mode == "" {
+			mode = "100644"
+		}
+		upd := exec.CommandContext(ctx, "git", "-C", repoPath,
+			"update-index", "--add", "--cacheinfo", mode+","+blobOID+","+f.Path)
+		upd.Env = env
+		if out, err := upd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("update-index %s: %w (%s)", f.Path, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	writeTree := exec.CommandContext(ctx, "git", "-C", repoPath, "write-tree")
+	writeTree.Env = env
+	treeOut, err := writeTree.Output()
+	if err != nil {
+		return "", fmt.Errorf("write-tree: %w", err)
+	}
+	treeOID := strings.TrimSpace(string(treeOut))
+
+	commitArgs := []string{"-C", repoPath, "commit-tree", treeOID, "-m", message}
+	if parentOID != "" {
+		commitArgs = append(commitArgs, "-p", parentOID)
+	}
+	commit := exec.CommandContext(ctx, "git", commitArgs...)
+	commit.Env = append(env,
+		"GIT_AUTHOR_NAME="+author.Name,
+		"GIT_AUTHOR_EMAIL="+author.Email,
+		"GIT_COMMITTER_NAME="+author.Name,
+		"GIT_COMMITTER_EMAIL="+author.Email,
+	)
+	commitOut, err := commit.Output()
+	if err != nil {
+		return "", fmt.Errorf("commit-tree: %w", err)
+	}
+	commitOID := strings.TrimSpace(string(commitOut))
+
+	updArgs := []string{"-C", repoPath, "update-ref", "refs/heads/" + branch, commitOID}
+	if existing, _ := r.BranchOID(ctx, owner, name, branch); existing != "" {
+		updArgs = append(updArgs, existing)
+	}
+	updRef := exec.CommandContext(ctx, "git", updArgs...)
+	if out, err := updRef.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("update-ref: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return commitOID, nil
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/supertokens/supertokens-golang/recipe/session"
 	"github.com/supertokens/supertokens-golang/supertokens"
@@ -25,6 +26,7 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/permissions"
 	"github.com/codecollab-co/forge/forge-platform/internal/pulls"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
+	"github.com/codecollab-co/forge/forge-platform/internal/runs"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
 
@@ -55,6 +57,7 @@ func main() {
 	reposStore := repos.NewStore(pool)
 	pullsStore := pulls.NewStore(pool)
 	issuesStore := issues.NewStore(pool)
+	runsStore := runs.NewStore(pool)
 
 	gitStorage, err := gitstorage.New(reposDir)
 	if err != nil {
@@ -702,6 +705,289 @@ func main() {
 		issueStateChange(w, req, usersRepo, reposStore, issuesStore, "reopen")
 	}))
 
+	// ---- Runs / Agent assignment ---------------------------------------
+
+	r.Post("/repos/{owner}/{name}/issues/{number}/assign-agent", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if err != nil {
+			httpRepoErr(w, err)
+			return
+		}
+		number, err := strconv.Atoi(chi.URLParam(req, "number"))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+		iss, err := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
+		if err != nil {
+			if errors.Is(err, issues.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		run, err := runsStore.Create(req.Context(), repo.ID, iss.ID, actor.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = bus.Publish(req.Context(), "run.requested", map[string]any{
+			"v":            1,
+			"run_id":       run.ID,
+			"repo_id":      repo.ID,
+			"repo_owner":   repo.OwnerHandle,
+			"repo_name":    repo.Name,
+			"issue_id":     iss.ID,
+			"issue_number": iss.Number,
+			"issue_title":  iss.Title,
+			"issue_body":   iss.Body,
+			"requested_by": actor.ID,
+		})
+
+		writeJSON(w, http.StatusAccepted, runResponse(run, ""))
+	}))
+
+	r.Get("/runs/{id}", func(w http.ResponseWriter, req *http.Request) {
+		run, err := runsStore.Get(req.Context(), chi.URLParam(req, "id"))
+		if err != nil {
+			if errors.Is(err, runs.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var prNumber int
+		if run.PRID != nil {
+			// best-effort lookup; non-fatal
+			_ = pool.QueryRow(req.Context(),
+				`SELECT number FROM platform.pull_requests WHERE id = $1`, *run.PRID).
+				Scan(&prNumber)
+		}
+		writeJSON(w, http.StatusOK, runResponse(run, fmtPRNumber(prNumber)))
+	})
+
+	r.Post("/runs/{id}/cancel", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		runID := chi.URLParam(req, "id")
+		if err := runsStore.RequestCancel(req.Context(), runID); err != nil {
+			if errors.Is(err, runs.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = bus.Publish(req.Context(), "run.cancel-requested", map[string]any{
+			"v":      1,
+			"run_id": runID,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"cancel_requested": true})
+	}))
+
+	// ---- Internal (service-to-service) endpoints -----------------------
+	//
+	// Auth: short-lived RS256 JWT in `Authorization: Bearer ...`.
+	// Used by forge-agent to drive Run state changes, append events, write
+	// commits, and open PRs without round-tripping through user auth.
+
+	r.Route("/internal", func(ir chi.Router) {
+		ir.Use(s2sAuthMiddleware(signer))
+
+		ir.Post("/runs/{id}/state", func(w http.ResponseWriter, req *http.Request) {
+			runID := chi.URLParam(req, "id")
+			var body struct {
+				State          string  `json:"state"`
+				ErrorCategory  *string `json:"error_category"`
+				ErrorMessage   *string `json:"error_message"`
+				SandboxID      *string `json:"sandbox_id"`
+				PRID           *string `json:"pr_id"`
+				StartedNow     bool    `json:"started_now"`
+				FinishedNow    bool    `json:"finished_now"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			_, err := pool.Exec(req.Context(), `
+                UPDATE agent.runs
+                   SET state = $2,
+                       error_category = COALESCE($3, error_category),
+                       error_message = COALESCE($4, error_message),
+                       sandbox_id = COALESCE($5, sandbox_id),
+                       pr_id = COALESCE($6::uuid, pr_id),
+                       started_at = CASE WHEN $7 AND started_at IS NULL THEN NOW() ELSE started_at END,
+                       finished_at = CASE WHEN $8 THEN NOW() ELSE finished_at END,
+                       last_heartbeat_at = NOW(),
+                       updated_at = NOW()
+                 WHERE id = $1
+            `, runID, body.State, body.ErrorCategory, body.ErrorMessage,
+				body.SandboxID, body.PRID, body.StartedNow, body.FinishedNow)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+
+		ir.Post("/runs/{id}/heartbeat", func(w http.ResponseWriter, req *http.Request) {
+			runID := chi.URLParam(req, "id")
+			var cancelRequested bool
+			if err := pool.QueryRow(req.Context(), `
+                UPDATE agent.runs SET last_heartbeat_at = NOW(), updated_at = NOW()
+                 WHERE id = $1 AND state IN ('queued','running')
+             RETURNING cancel_requested
+            `, runID).Scan(&cancelRequested); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					http.NotFound(w, req)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"cancel_requested": cancelRequested})
+		})
+
+		ir.Post("/runs/{id}/events", func(w http.ResponseWriter, req *http.Request) {
+			runID := chi.URLParam(req, "id")
+			var body struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			payload := body.Payload
+			if len(payload) == 0 {
+				payload = json.RawMessage(`{}`)
+			}
+			if _, err := pool.Exec(req.Context(),
+				`INSERT INTO agent.run_events (run_id, type, payload) VALUES ($1, $2, $3::jsonb)`,
+				runID, body.Type, string(payload),
+			); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+		})
+
+		ir.Post("/repos/{repo_id}/commits", func(w http.ResponseWriter, req *http.Request) {
+			repoID := chi.URLParam(req, "repo_id")
+			repo, err := reposStore.GetByID(req.Context(), repoID)
+			if err != nil {
+				httpRepoErr(w, err)
+				return
+			}
+			var body struct {
+				Branch     string `json:"branch"`
+				BaseBranch string `json:"base_branch"`
+				Message    string `json:"message"`
+				Author     struct {
+					Name  string `json:"name"`
+					Email string `json:"email"`
+				} `json:"author"`
+				Files []struct {
+					Path    string `json:"path"`
+					Content string `json:"content"` // utf-8 text only at MVP
+				} `json:"files"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			if body.Branch == "" || body.BaseBranch == "" || body.Message == "" || len(body.Files) == 0 {
+				http.Error(w, "branch, base_branch, message, files are required", http.StatusBadRequest)
+				return
+			}
+			fc := make([]gitstorage.FileChange, 0, len(body.Files))
+			for _, f := range body.Files {
+				fc = append(fc, gitstorage.FileChange{Path: f.Path, Content: []byte(f.Content)})
+			}
+			oid, err := gitStorage.CreateCommit(req.Context(),
+				repo.OwnerHandle, repo.Name, body.Branch, body.BaseBranch, fc,
+				gitstorage.Identity{Name: body.Author.Name, Email: body.Author.Email}, body.Message,
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"branch": body.Branch, "commit_oid": oid})
+		})
+
+		ir.Post("/repos/{repo_id}/pulls", func(w http.ResponseWriter, req *http.Request) {
+			repoID := chi.URLParam(req, "repo_id")
+			repo, err := reposStore.GetByID(req.Context(), repoID)
+			if err != nil {
+				httpRepoErr(w, err)
+				return
+			}
+			var body struct {
+				Title      string `json:"title"`
+				Body       string `json:"body"`
+				HeadBranch string `json:"head_branch"`
+				BaseBranch string `json:"base_branch"`
+				AuthorID   string `json:"author_id"`
+				RunID      string `json:"run_id"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			pr, err := pullsStore.Create(req.Context(), pulls.CreateInput{
+				RepoID: repo.ID, AuthorID: body.AuthorID,
+				Title: body.Title, Body: body.Body,
+				HeadBranch: body.HeadBranch, BaseBranch: body.BaseBranch,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if body.RunID != "" {
+				_, _ = pool.Exec(req.Context(),
+					`UPDATE platform.pull_requests SET created_by_run_id = $2 WHERE id = $1`,
+					pr.ID, body.RunID)
+			}
+			_ = bus.Publish(req.Context(), "pr.opened", map[string]any{
+				"v":         1,
+				"pr_id":     pr.ID,
+				"repo_id":   repo.ID,
+				"number":    pr.Number,
+				"author_id": body.AuthorID,
+				"head":      pr.HeadBranch,
+				"base":      pr.BaseBranch,
+				"run_id":    body.RunID,
+			})
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"pr_id":  pr.ID,
+				"number": pr.Number,
+			})
+		})
+	})
+
+	// ---- Janitor: fail Runs whose heartbeat is older than 90s ---------
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			n, err := runsStore.FailStuck(context.Background(), 90*time.Second)
+			if err != nil {
+				log.Printf("janitor: fail-stuck: %v", err)
+			} else if n > 0 {
+				log.Printf("janitor: marked %d stuck runs failed", n)
+			}
+		}
+	}()
+
 	// Smart Git HTTP transport — last so it doesn't shadow API routes.
 	// Matches /<owner>/<name>.git/* (git advertises and pushes here).
 	r.Handle("/{owner}/{name}.git/*", gitHTTP)
@@ -864,6 +1150,48 @@ func issueStateChange(
 	// Re-fetch to return the updated issue.
 	updated, _ := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
 	writeJSON(w, http.StatusOK, issueResponse(updated))
+}
+
+func s2sAuthMiddleware(signer *auth.Signer) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if !strings.HasPrefix(h, "Bearer ") {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			tok := strings.TrimPrefix(h, "Bearer ")
+			if _, err := signer.Verify(tok); err != nil {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func runResponse(r *runs.Run, prNumber string) map[string]any {
+	out := map[string]any{
+		"id":                r.ID,
+		"state":             r.State,
+		"cancel_requested":  r.CancelRequested,
+		"sandbox_id":        derefString(r.SandboxID),
+		"error_category":    derefString(r.ErrorCategory),
+		"error_message":     derefString(r.ErrorMessage),
+		"created_at":        r.CreatedAt,
+		"started_at":        r.StartedAt,
+		"finished_at":       r.FinishedAt,
+		"last_heartbeat_at": r.LastHeartbeatAt,
+		"pr_number":         prNumber,
+	}
+	return out
+}
+
+func fmtPRNumber(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 func meResponse(u *users.User) map[string]any {
