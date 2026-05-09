@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -878,6 +880,58 @@ func main() {
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
+		})
+
+		ir.Get("/repos/{repo_id}/snapshot", func(w http.ResponseWriter, req *http.Request) {
+			repoID := chi.URLParam(req, "repo_id")
+			repo, err := reposStore.GetByID(req.Context(), repoID)
+			if err != nil {
+				httpRepoErr(w, err)
+				return
+			}
+			ref := req.URL.Query().Get("ref")
+			if ref == "" {
+				ref, _ = gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
+			}
+			if ref == "" {
+				writeJSON(w, http.StatusOK, map[string]any{"ref": "", "files": []any{}})
+				return
+			}
+			// Walk all blobs at the given ref. ls-tree -r without --full-tree
+			// would be relative to CWD; we want absolute repo paths.
+			out, err := exec.CommandContext(req.Context(),
+				"git", "-C", gitStorage.Path(repo.OwnerHandle, repo.Name),
+				"ls-tree", "-r", "--full-tree", "-z", ref,
+			).Output()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			files := []map[string]string{}
+			for _, raw := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+				if raw == "" {
+					continue
+				}
+				tab := strings.IndexByte(raw, '\t')
+				if tab < 0 {
+					continue
+				}
+				head, path := raw[:tab], raw[tab+1:]
+				fields := strings.Fields(head)
+				if len(fields) != 3 || fields[1] != "blob" {
+					continue
+				}
+				blob, err := gitStorage.ReadBlob(req.Context(), repo.OwnerHandle, repo.Name, ref, path)
+				if err != nil || blob == nil {
+					continue
+				}
+				// Skip blobs that aren't valid UTF-8 (binaries, images, etc.).
+				if !utf8.Valid(blob) {
+					continue
+				}
+				files = append(files, map[string]string{"path": path, "content": string(blob)})
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ref": ref, "files": files})
 		})
 
 		ir.Post("/repos/{repo_id}/commits", func(w http.ResponseWriter, req *http.Request) {

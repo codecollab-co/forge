@@ -77,6 +77,17 @@ class PlatformClient:
             )
             r.raise_for_status()
 
+    async def snapshot(self, repo_id: str, ref: str | None = None) -> dict:
+        params = {"ref": ref} if ref else None
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.get(
+                f"{self._base_url}/internal/repos/{repo_id}/snapshot",
+                headers=self._headers(),
+                params=params,
+            )
+            r.raise_for_status()
+            return r.json()
+
     async def commit(
         self,
         repo_id: str,

@@ -16,8 +16,11 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 
+from app.agent_loop import AgentLoopError, run_agent
+from app.model_client import ModelClient, from_env as model_from_env
 from app.platform_client import PlatformClient
 from app.sandbox import SandboxProvider, Sandbox
+from app.workspace import VirtualFilesystem
 from app.state_machine import (
     AcquireSandbox,
     CancelRequested,
@@ -58,9 +61,15 @@ HEARTBEAT_INTERVAL = dt.timedelta(seconds=15)
 
 
 class Runner:
-    def __init__(self, sandboxes: SandboxProvider, platform: PlatformClient) -> None:
+    def __init__(
+        self,
+        sandboxes: SandboxProvider,
+        platform: PlatformClient,
+        model: ModelClient | None = None,
+    ) -> None:
         self._sandboxes = sandboxes
         self._platform = platform
+        self._model = model
 
     async def run(self, request: RunRequest) -> None:
         ctx = Context(state=State.QUEUED)
@@ -155,33 +164,73 @@ class Runner:
         logger.info("run=%s terminated state=%s", request.run_id, ctx.state)
 
     async def _commit_and_open_pr(self, request: RunRequest, events: asyncio.Queue) -> None:
+        # Slice 8: real agent loop.
+        # 1. Snapshot the repository at HEAD into a virtual filesystem.
+        # 2. Drive the agent loop; tools mutate the VFS.
+        # 3. Commit changed files; open the PR.
+        snapshot = await self._platform.snapshot(request.repo_id)
+        seed = {f["path"]: f["content"] for f in snapshot["files"]}
+        vfs = VirtualFilesystem.seeded(seed)
+
+        model = self._model or model_from_env()
+        try:
+            agent_result = await run_agent(
+                model=model,
+                workspace=vfs,
+                issue_title=request.issue_title,
+                issue_body=request.issue_body,
+                repo_owner=request.repo_owner,
+                repo_name=request.repo_name,
+            )
+        except AgentLoopError as exc:
+            await self._platform.append_event(
+                request.run_id, "agent.loop_failed", {"reason": str(exc)}
+            )
+            raise
+
+        await self._platform.append_event(
+            request.run_id,
+            "agent.completed",
+            {
+                "iterations": agent_result.iterations,
+                "input_tokens": agent_result.input_tokens,
+                "output_tokens": agent_result.output_tokens,
+            },
+        )
+
+        changed = vfs.changed_files()
+        if not changed:
+            # Agent finished without changing anything. Treat as failure so
+            # the user sees that no PR was opened.
+            await events.put(
+                CrashedOrCancelled(
+                    category="agent-no-changes",
+                    message="agent finished without proposing any file changes",
+                )
+            )
+            return
+
         branch = f"forge-agent/run-{request.run_id[:8]}"
-        body = (
-            f"_Stub Author Agent (slice 7)._\n\n"
-            f"Run `{request.run_id}` against issue "
-            f"#{request.issue_number}: **{request.issue_title}**\n\n"
-            f"This PR was produced without an LLM. Slice 8 replaces the stub "
-            f"with the real agent loop."
-        )
-        file_content = (
-            f"# Run {request.run_id}\n\n"
-            f"- Issue: #{request.issue_number} — {request.issue_title}\n"
-            f"- Created at: {dt.datetime.now(dt.timezone.utc).isoformat()}\n"
-        )
         await self._platform.commit(
             request.repo_id,
             branch=branch,
-            base_branch="main",
-            files=[{"path": f"runs/{request.run_id}.md", "content": file_content}],
-            message=f"agent: notes for run {request.run_id[:8]}",
+            base_branch=snapshot.get("ref") or "main",
+            files=[{"path": p, "content": c} for p, c in changed],
+            message=f"agent: address issue #{request.issue_number}",
             author={"name": "forge-agent", "email": "forge-agent@forge.local"},
+        )
+
+        pr_body = (
+            f"_Authored by Forge Agent for run `{request.run_id[:8]}`._\n\n"
+            f"**Summary**\n\n{agent_result.summary}\n\n"
+            f"---\nClosed by run on issue #{request.issue_number}: {request.issue_title}"
         )
         pr = await self._platform.open_pr(
             request.repo_id,
-            title=f"agent: handle issue #{request.issue_number}",
-            body=body,
+            title=f"agent: {request.issue_title[:60]}",
+            body=pr_body,
             head_branch=branch,
-            base_branch="main",
+            base_branch=snapshot.get("ref") or "main",
             author_id=request.requested_by,
             run_id=request.run_id,
         )
