@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 from app.model_client import (
     Message,
@@ -17,6 +18,11 @@ from app.model_client import (
     ToolUse,
 )
 from app.tools import TOOL_DEFS, Workspace, execute as execute_tool
+
+EventSink = Callable[[str, dict], Awaitable[None]]
+
+
+async def _noop_sink(_t: str, _p: dict) -> None: ...
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +63,7 @@ async def run_agent(
     issue_body: str,
     repo_owner: str,
     repo_name: str,
+    event_sink: EventSink = _noop_sink,
 ) -> AgentResult:
     initial_listing = "\n".join(workspace.list_files("")[:200]) or "(empty repository)"
     user_msg = (
@@ -79,6 +86,9 @@ async def run_agent(
         total_in += resp.usage_input
         total_out += resp.usage_output
 
+        for text in resp.text_blocks:
+            await event_sink("model.thought", {"text": text})
+
         if resp.stop_reason == "error":
             raise AgentLoopError("model returned an error stop_reason")
 
@@ -99,7 +109,13 @@ async def run_agent(
         tool_result_blocks: list[dict] = []
         final_summary: str | None = None
         for tu in resp.tool_uses:
+            await event_sink("tool.use", {"name": tu.name, "input": tu.input, "id": tu.id})
             out = execute_tool(tu.name, tu.input, workspace)
+            await event_sink(
+                "tool.result",
+                {"id": tu.id, "name": tu.name, "is_error": out.is_error,
+                 "content": (out.content[:500] + "…") if len(out.content) > 500 else out.content},
+            )
             tool_result_blocks.append(
                 {
                     "type": "tool_result",

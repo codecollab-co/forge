@@ -179,15 +179,23 @@ export default function IssueDetailPage() {
               </Link>
             </p>
           )}
-          {(run.state === "queued" || run.state === "running") && (
-            <button
-              onClick={cancelRun}
-              disabled={busy || run.cancel_requested}
-              className="mt-2 rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Link
+              href={`/runs/${run.id}`}
+              className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
-              Cancel run
-            </button>
-          )}
+              Live trace
+            </Link>
+            {(run.state === "queued" || run.state === "running") && (
+              <button
+                onClick={cancelRun}
+                disabled={busy || run.cancel_requested}
+                className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              >
+                Cancel run
+              </button>
+            )}
+          </div>
         </section>
       )}
 

@@ -74,6 +74,7 @@ services:
       PLATFORM_API_URL: http://forge-platform:8080
       E2B_API_KEY: ${E2B_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      WEBSITE_DOMAIN: http://localhost:3000
       PORT: "8081"
     ports:
       - "8081:8081"
@@ -88,6 +89,7 @@ services:
       PLATFORM_API_URL: http://forge-platform:8080
       NEXT_PUBLIC_PLATFORM_API_URL: http://localhost:8080
       AGENT_API_URL: http://forge-agent:8081
+      NEXT_PUBLIC_AGENT_API_URL: http://localhost:8081
       NEXT_PUBLIC_WEBSITE_DOMAIN: http://localhost:3000
     ports:
       - "3000:3000"

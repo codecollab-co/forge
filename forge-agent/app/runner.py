@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from app.agent_loop import AgentLoopError, run_agent
 from app.model_client import ModelClient, from_env as model_from_env
 from app.platform_client import PlatformClient
+from app.run_pubsub import RunEvent, RunPubSub
 from app.sandbox import SandboxProvider, Sandbox
 from app.workspace import VirtualFilesystem
 from app.state_machine import (
@@ -66,10 +67,21 @@ class Runner:
         sandboxes: SandboxProvider,
         platform: PlatformClient,
         model: ModelClient | None = None,
+        pubsub: RunPubSub | None = None,
     ) -> None:
         self._sandboxes = sandboxes
         self._platform = platform
         self._model = model
+        self._pubsub = pubsub
+
+    async def _emit(self, run_id: str, event_type: str, payload: dict) -> None:
+        """Persist (via platform-api) and broadcast (via pubsub) a Run event."""
+        try:
+            await self._platform.append_event(run_id, event_type, payload)
+        except Exception:
+            logger.exception("append_event failed type=%s", event_type)
+        if self._pubsub is not None:
+            await self._pubsub.publish(run_id, RunEvent(type=event_type, payload=payload))
 
     async def run(self, request: RunRequest) -> None:
         ctx = Context(state=State.QUEUED)
@@ -103,9 +115,7 @@ class Runner:
 
                 event = await events.get()
                 logger.info("run=%s event=%s state=%s", request.run_id, type(event).__name__, ctx.state)
-                await self._platform.append_event(
-                    request.run_id, type(event).__name__, {}
-                )
+                await self._emit(request.run_id, "run.state_event", {"event": type(event).__name__, "state": ctx.state.value})
 
                 progressed = step(ctx, event)
                 ctx = progressed.context
@@ -161,6 +171,13 @@ class Runner:
             pr_id=ctx.pr_id,
             finished_now=True,
         )
+        await self._emit(
+            request.run_id,
+            "run.terminal",
+            {"state": ctx.state.value, "error_category": ctx.error_category},
+        )
+        if self._pubsub is not None:
+            await self._pubsub.close(request.run_id)
         logger.info("run=%s terminated state=%s", request.run_id, ctx.state)
 
     async def _commit_and_open_pr(self, request: RunRequest, events: asyncio.Queue) -> None:
@@ -173,6 +190,10 @@ class Runner:
         vfs = VirtualFilesystem.seeded(seed)
 
         model = self._model or model_from_env()
+
+        async def sink(event_type: str, payload: dict) -> None:
+            await self._emit(request.run_id, event_type, payload)
+
         try:
             agent_result = await run_agent(
                 model=model,
@@ -181,14 +202,13 @@ class Runner:
                 issue_body=request.issue_body,
                 repo_owner=request.repo_owner,
                 repo_name=request.repo_name,
+                event_sink=sink,
             )
         except AgentLoopError as exc:
-            await self._platform.append_event(
-                request.run_id, "agent.loop_failed", {"reason": str(exc)}
-            )
+            await self._emit(request.run_id, "agent.loop_failed", {"reason": str(exc)})
             raise
 
-        await self._platform.append_event(
+        await self._emit(
             request.run_id,
             "agent.completed",
             {

@@ -1,9 +1,10 @@
 """forge-agent entry point.
 
-Slice-7 surface:
-- GET /healthz             — liveness
-- POST /verify-token       — verifies a forge-platform JWT (legacy from slice 1)
-- Background consumer      — pulls run.requested events and runs them
+Surface:
+- GET /healthz                 — liveness
+- GET /runs/:id/stream         — SSE live trace (slice 9)
+- POST /verify-token           — verifies a forge-platform JWT (legacy)
+- Background consumer          — pulls run.requested events, drives Runs
 """
 
 from __future__ import annotations
@@ -13,31 +14,43 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth import AuthError, verify
 from app.eventbus import Consumer
 from app.platform_client import PlatformClient
+from app.run_pubsub import (
+    RunEvent,
+    RunPubSub,
+    fetch_history,
+    is_terminal,
+    make_pubsub,
+)
 from app.runner import RunRequest, Runner
 from app.sandbox import from_env as sandbox_from_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("forge-agent")
 
-
-def _build_runner() -> Runner:
-    return Runner(sandboxes=sandbox_from_env(), platform=PlatformClient())
+WEBSITE_DOMAIN = os.environ.get("WEBSITE_DOMAIN", "http://localhost:3000")
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    runner = _build_runner()
+async def lifespan(app: FastAPI):
+    pubsub = make_pubsub()
+    runner = Runner(
+        sandboxes=sandbox_from_env(),
+        platform=PlatformClient(),
+        pubsub=pubsub,
+    )
     consumer = Consumer()
+    app.state.pubsub = pubsub
 
     async def handle(event_type: str, payload: dict) -> None:
         if event_type != "run.requested":
-            logger.debug("ignoring event type=%s", event_type)
             return
         if int(payload.get("v", 0)) != 1:
             logger.warning("ignoring run.requested with unknown version v=%s", payload.get("v"))
@@ -57,7 +70,6 @@ async def lifespan(_: FastAPI):
         except Exception:
             logger.exception("malformed run.requested payload: %r", payload)
             return
-        # Run-per-event in the background so the consumer keeps draining.
         asyncio.create_task(runner.run(req))
 
     task = asyncio.create_task(consumer.run(handle))
@@ -69,6 +81,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[WEBSITE_DOMAIN],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/healthz")
@@ -87,6 +106,59 @@ def verify_token(body: TokenIn) -> dict:
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return {"valid": True, "claims": claims}
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str, request: Request) -> StreamingResponse:
+    pubsub: RunPubSub = request.app.state.pubsub
+    last_event_id_header = request.headers.get("Last-Event-ID", "0")
+    try:
+        since_id = int(last_event_id_header)
+    except ValueError:
+        since_id = 0
+
+    async def gen():
+        # 1. Replay historical events (catch up from since_id).
+        try:
+            history = await asyncio.to_thread(
+                fetch_history, os.environ["DATABASE_URL"], run_id, since_id
+            )
+        except Exception:
+            logger.exception("history fetch failed for run=%s", run_id)
+            history = []
+        for evt in history:
+            yield evt.to_sse()
+            if is_terminal(evt.type):
+                return
+
+        # 2. Subscribe and stream live events.
+        queue = await pubsub.subscribe(run_id)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if item is None:
+                    return
+                yield item.to_sse()
+                if is_terminal(item.type):
+                    return
+        finally:
+            await pubsub.unsubscribe(run_id, queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # for nginx
+        },
+    )
 
 
 def _port() -> int:
