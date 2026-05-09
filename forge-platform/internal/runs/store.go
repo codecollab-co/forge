@@ -140,6 +140,48 @@ func (s *Store) RequestCancel(ctx context.Context, id string) error {
 	return nil
 }
 
+// ListForUser returns the user's most recent Runs across all their repos.
+type RunListItem struct {
+	ID          string
+	State       string
+	IssueNumber int
+	IssueTitle  string
+	RepoOwner   string
+	RepoName    string
+	PRNumber    *int
+	CreatedAt   time.Time
+}
+
+func (s *Store) ListForUser(ctx context.Context, userID string, limit int) ([]*RunListItem, error) {
+	rows, err := s.pool.Query(ctx, `
+        SELECT r.id, r.state, i.number, i.title,
+               u.handle, repo.name,
+               pr.number, r.created_at
+          FROM agent.runs r
+          JOIN platform.repositories repo ON repo.id = r.repo_id
+          JOIN platform.users u ON u.id = repo.owner_id
+          JOIN platform.issues i ON i.id = r.issue_id
+          LEFT JOIN platform.pull_requests pr ON pr.id = r.pr_id
+         WHERE r.requested_by = $1
+         ORDER BY r.created_at DESC
+         LIMIT $2
+    `, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RunListItem
+	for rows.Next() {
+		it := &RunListItem{}
+		if err := rows.Scan(&it.ID, &it.State, &it.IssueNumber, &it.IssueTitle,
+			&it.RepoOwner, &it.RepoName, &it.PRNumber, &it.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // FailStuck marks Runs as failed if they've been running with no heartbeat
 // for more than `staleAfter`. Returns the number of Runs affected. Called
 // by the janitor goroutine.

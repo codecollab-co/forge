@@ -12,6 +12,7 @@ export default function NewRepoPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
+  const [initReadme, setInitReadme] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,7 +31,7 @@ export default function NewRepoPage() {
     }
     setSubmitting(true);
     try {
-      const repo = await api.createRepo({ name, description, visibility });
+      const repo = await api.createRepo({ name, description, visibility, init_readme: initReadme });
       router.push(`/${repo.owner}/${repo.name}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -71,6 +72,22 @@ export default function NewRepoPage() {
             <option value="private">Private</option>
           </select>
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={initReadme}
+            onChange={(e) => setInitReadme(e.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Initialize with a README.md</span>
+            <span className="block text-xs text-zinc-500">
+              Creates the first commit on <code>main</code> so you can clone and edit immediately.
+              License picker and <code>.gitignore</code> templates land in a follow-up.
+            </span>
+          </span>
+        </label>
+
         {error && <p className="text-red-600">Error: {error}</p>}
         <button
           type="submit"

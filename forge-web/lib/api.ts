@@ -112,11 +112,25 @@ export type IssueDetail = {
   comments: IssueComment[];
 };
 
+export type DashboardRun = {
+  id: string;
+  state: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  issue_number: number;
+  issue_title: string;
+  repo_owner: string;
+  repo_name: string;
+  pr_number: number | null;
+  created_at: string;
+};
+
 export const api = {
   me: () => request<Me>("GET", "/me"),
+  updateMe: (patch: { display_name?: string }) =>
+    request<Me>("PATCH", "/me", patch),
+  listMyRuns: () => request<DashboardRun[]>("GET", "/me/runs"),
 
   listRepos: () => request<Repo[]>("GET", "/repos"),
-  createRepo: (input: { name: string; description?: string; visibility?: "public" | "private" }) =>
+  createRepo: (input: { name: string; description?: string; visibility?: "public" | "private"; init_readme?: boolean }) =>
     request<Repo>("POST", "/repos", input),
   getRepo: (owner: string, name: string) => request<Repo>("GET", `/repos/${owner}/${name}`),
   getBranches: (owner: string, name: string) =>

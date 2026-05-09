@@ -1,6 +1,8 @@
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { RepoTabs } from "@/app/components/RepoTabs";
+import { CopyButton } from "@/app/components/CopyButton";
 
 type Props = {
   params: Promise<{ owner: string; name: string }>;
@@ -68,36 +70,26 @@ export default async function RepoPage({ params, searchParams }: Props) {
   const cloneURL = `${PLATFORM_PUBLIC_URL}${repo.clone_url}`;
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 px-6 py-16">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">
-          {repo.owner}/{repo.name}
-        </h1>
-        {repo.description && (
-          <p className="text-zinc-600 dark:text-zinc-400">{repo.description}</p>
-        )}
-        <p className="text-xs uppercase tracking-wide text-zinc-400">{repo.visibility}</p>
-      </header>
+    <>
+      <RepoTabs owner={owner} name={name} />
+      <main className="mx-auto max-w-5xl space-y-6 px-6 py-8">
+        <header className="space-y-1">
+          <h1 className="text-2xl font-semibold">
+            {repo.owner}/{repo.name}
+          </h1>
+          {repo.description && (
+            <p className="text-zinc-600 dark:text-zinc-400">{repo.description}</p>
+          )}
+          <p className="text-xs uppercase tracking-wide text-zinc-400">{repo.visibility}</p>
+        </header>
 
-      <nav className="flex gap-3 text-sm">
-        <Link
-          href={`/${owner}/${name}/issues`}
-          className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-        >
-          Issues
-        </Link>
-        <Link
-          href={`/${owner}/${name}/pulls`}
-          className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-        >
-          Pull Requests
-        </Link>
-      </nav>
-
-      <section className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
-        <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Clone</h2>
-        <pre className="overflow-x-auto text-sm">git clone {cloneURL}</pre>
-      </section>
+        <section className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Clone</h2>
+            <CopyButton text={`git clone ${cloneURL}`} />
+          </div>
+          <pre className="overflow-x-auto text-sm">git clone {cloneURL}</pre>
+        </section>
 
       {!isEmpty && allBranches.length > 1 && (
         <section className="flex flex-wrap items-center gap-2 text-sm">
@@ -147,10 +139,11 @@ export default async function RepoPage({ params, searchParams }: Props) {
       )}
 
       {readme && (
-        <section className="prose prose-zinc max-w-none rounded-md border border-zinc-200 p-6 dark:prose-invert dark:border-zinc-800">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{readme}</ReactMarkdown>
-        </section>
-      )}
-    </main>
+          <section className="prose prose-zinc max-w-none rounded-md border border-zinc-200 p-6 dark:prose-invert dark:border-zinc-800">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{readme}</ReactMarkdown>
+          </section>
+        )}
+      </main>
+    </>
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, type Issue, type IssueState } from "@/lib/api";
+import { RepoTabs } from "@/app/components/RepoTabs";
 
 export default function IssuesPage() {
   const params = useParams<{ owner: string; name: string }>();
@@ -22,7 +23,9 @@ export default function IssuesPage() {
   }, [params.owner, params.name, state]);
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 px-6 py-12">
+    <>
+    <RepoTabs owner={params.owner} name={params.name} />
+    <main className="mx-auto max-w-5xl space-y-6 px-6 py-8">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">
           Issues · {params.owner}/{params.name}
@@ -72,5 +75,6 @@ export default function IssuesPage() {
         </ul>
       )}
     </main>
+    </>
   );
 }

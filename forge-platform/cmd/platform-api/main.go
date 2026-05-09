@@ -111,6 +111,58 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "published"})
 	})
 
+	r.Patch("/me", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			DisplayName *string `json:"display_name"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.DisplayName != nil {
+			if _, err := pool.Exec(req.Context(),
+				`UPDATE platform.users SET display_name = NULLIF($2,''), updated_at = NOW() WHERE id = $1`,
+				u.ID, strings.TrimSpace(*body.DisplayName),
+			); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		fresh, _ := usersRepo.BySuperTokensID(req.Context(), stID)
+		writeJSON(w, http.StatusOK, meResponse(fresh))
+	}))
+
+	r.Get("/me/runs", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		list, err := runsStore.ListForUser(req.Context(), u.ID, 25)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, it := range list {
+			out = append(out, map[string]any{
+				"id": it.ID, "state": it.State,
+				"issue_number": it.IssueNumber, "issue_title": it.IssueTitle,
+				"repo_owner": it.RepoOwner, "repo_name": it.RepoName,
+				"pr_number": it.PRNumber,
+				"created_at": it.CreatedAt,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	}))
+
 	r.Get("/me", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
 		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
 		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
@@ -137,6 +189,7 @@ func main() {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 			Visibility  string `json:"visibility"`
+			InitReadme  bool   `json:"init_readme"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
@@ -173,6 +226,29 @@ func main() {
 		if err := gitStorage.Init(req.Context(), u.Handle, body.Name); err != nil && !errors.Is(err, gitstorage.ErrAlreadyExists) {
 			http.Error(w, "git init: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if body.InitReadme {
+			readme := "# " + body.Name + "\n"
+			if body.Description != "" {
+				readme += "\n" + body.Description + "\n"
+			}
+			authorName := u.Handle
+			if u.DisplayName != "" {
+				authorName = u.DisplayName
+			}
+			authorEmail := u.Email
+			if authorEmail == "" {
+				authorEmail = u.Handle + "@forge.local"
+			}
+			if _, err := gitStorage.CreateCommit(
+				req.Context(), u.Handle, body.Name, "main", "main",
+				[]gitstorage.FileChange{{Path: "README.md", Content: []byte(readme)}},
+				gitstorage.Identity{Name: authorName, Email: authorEmail},
+				"Initial commit",
+			); err != nil {
+				log.Printf("init_readme failed for %s/%s: %v", u.Handle, body.Name, err)
+			}
 		}
 
 		writeJSON(w, http.StatusCreated, repoResponse(row, u.Handle))
