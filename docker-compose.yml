@@ -11,6 +11,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./forge-platform/migrations/00_bootstrap.sql:/docker-entrypoint-initdb.d/00_bootstrap.sql
       - ./forge-platform/migrations/01_users.sql:/docker-entrypoint-initdb.d/01_users.sql
+      - ./forge-platform/migrations/02_repositories.sql:/docker-entrypoint-initdb.d/02_repositories.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
       interval: 2s
@@ -47,9 +48,12 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      REPOS_DIR: /var/lib/forge/repos
       PORT: "8080"
     ports:
       - "8080:8080"
+    volumes:
+      - repos:/var/lib/forge/repos
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,3 +88,4 @@ services:
 
 volumes:
   pgdata:
+  repos:

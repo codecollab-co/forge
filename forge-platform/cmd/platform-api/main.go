@@ -18,6 +18,9 @@ import (
 
 	"github.com/codecollab-co/forge/forge-platform/internal/auth"
 	"github.com/codecollab-co/forge/forge-platform/internal/eventbus"
+	gitstorage "github.com/codecollab-co/forge/forge-platform/internal/git"
+	"github.com/codecollab-co/forge/forge-platform/internal/githttp"
+	"github.com/codecollab-co/forge/forge-platform/internal/repos"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
 
@@ -27,6 +30,7 @@ func main() {
 	dbURL := mustEnv("DATABASE_URL")
 	port := envOr("PORT", "8080")
 	websiteDomain := envOr("WEBSITE_DOMAIN", "http://localhost:3000")
+	reposDir := envOr("REPOS_DIR", "/var/lib/forge/repos")
 
 	signer, err := auth.NewSignerFromEnv()
 	if err != nil {
@@ -44,6 +48,12 @@ func main() {
 
 	bus := eventbus.New(pool)
 	usersRepo := users.NewRepo(pool)
+	reposStore := repos.NewStore(pool)
+
+	gitStorage, err := gitstorage.New(reposDir)
+	if err != nil {
+		log.Fatalf("git storage: %v", err)
+	}
 
 	if err := auth.InitSuperTokens(func(ctx context.Context, e auth.SignInUp) error {
 		_, err := usersRepo.UpsertOnSignInUp(ctx, users.SignInUpInput{
@@ -58,6 +68,8 @@ func main() {
 	}); err != nil {
 		log.Fatalf("supertokens init: %v", err)
 	}
+
+	gitHTTP := &githttp.Handler{Repos: reposStore, GitStorage: gitStorage}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -99,15 +111,100 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id":           u.ID,
-			"handle":       u.Handle,
-			"email":        u.Email,
-			"display_name": u.DisplayName,
-			"avatar_url":   u.AvatarURL,
-			"provider":     u.Provider,
-		})
+		writeJSON(w, http.StatusOK, meResponse(u))
 	}))
+
+	r.Post("/repos", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+
+		var body struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Visibility  string `json:"visibility"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		body.Name = strings.TrimSpace(strings.ToLower(body.Name))
+		if err := gitstorage.ValidateOwnerOrName(body.Name); err != nil {
+			http.Error(w, "invalid name", http.StatusBadRequest)
+			return
+		}
+		if body.Visibility == "" {
+			body.Visibility = "public"
+		}
+		if body.Visibility != "public" && body.Visibility != "private" {
+			http.Error(w, "invalid visibility", http.StatusBadRequest)
+			return
+		}
+
+		row, err := reposStore.Create(req.Context(), repos.CreateInput{
+			OwnerID:     u.ID,
+			Name:        body.Name,
+			Description: body.Description,
+			Visibility:  body.Visibility,
+		})
+		if err != nil {
+			if errors.Is(err, repos.ErrAlreadyExists) {
+				http.Error(w, "repository already exists", http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := gitStorage.Init(req.Context(), u.Handle, body.Name); err != nil && !errors.Is(err, gitstorage.ErrAlreadyExists) {
+			http.Error(w, "git init: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, repoResponse(row, u.Handle))
+	}))
+
+	r.Get("/repos", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		list, err := reposStore.ListByOwnerID(req.Context(), u.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, repo := range list {
+			out = append(out, repoResponse(repo, repo.OwnerHandle))
+		}
+		writeJSON(w, http.StatusOK, out)
+	}))
+
+	r.Get("/repos/{owner}/{name}", func(w http.ResponseWriter, req *http.Request) {
+		owner := chi.URLParam(req, "owner")
+		name := chi.URLParam(req, "name")
+		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
+		if err != nil {
+			if errors.Is(err, repos.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, repoResponse(repo, repo.OwnerHandle))
+	})
+
+	// Smart Git HTTP transport — last so it doesn't shadow API routes.
+	// Matches /<owner>/<name>.git/* (git advertises and pushes here).
+	r.Handle("/{owner}/{name}.git/*", gitHTTP)
+	r.Handle("/{owner}/{name}.git", gitHTTP)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -117,6 +214,29 @@ func main() {
 	log.Printf("forge-platform listening on :%s", port)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func meResponse(u *users.User) map[string]any {
+	return map[string]any{
+		"id":           u.ID,
+		"handle":       u.Handle,
+		"email":        u.Email,
+		"display_name": u.DisplayName,
+		"avatar_url":   u.AvatarURL,
+		"provider":     u.Provider,
+	}
+}
+
+func repoResponse(r *repos.Repository, ownerHandle string) map[string]any {
+	return map[string]any{
+		"id":          r.ID,
+		"owner":       ownerHandle,
+		"name":        r.Name,
+		"description": r.Description,
+		"visibility":  r.Visibility,
+		"created_at":  r.CreatedAt,
+		"clone_url":   "/" + ownerHandle + "/" + r.Name + ".git",
 	}
 }
 
@@ -138,9 +258,7 @@ func corsMiddleware(websiteDomain string) func(http.Handler) http.Handler {
 }
 
 func supertokensMiddleware() func(http.Handler) http.Handler {
-	mw := supertokens.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// fall-through; chi handles non-supertokens routes via the next handler
-	}))
+	mw := supertokens.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			handled := false
@@ -153,9 +271,6 @@ func supertokensMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-// peekResponseWriter detects whether the SuperTokens middleware actually
-// handled the request (by writing a status). If it didn't, we fall through
-// to the chi router.
 type peekResponseWriter struct {
 	http.ResponseWriter
 	captured *bool

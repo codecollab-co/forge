@@ -26,6 +26,12 @@ export default async function Page() {
           Sign in
         </Link>
         <Link
+          href="/repos"
+          className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          Repositories
+        </Link>
+        <Link
           href="/me"
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
