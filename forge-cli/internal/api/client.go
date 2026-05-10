@@ -166,6 +166,102 @@ func (c *Client) DeleteRepo(ctx context.Context, owner, name string) error {
 	return c.request(ctx, http.MethodDelete, "/repos/"+owner+"/"+name, nil, nil)
 }
 
+// ---- Issues --------------------------------------------------------------
+
+type Assignee struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Handle string `json:"handle"`
+}
+
+type Issue struct {
+	ID        string    `json:"id"`
+	Number    int       `json:"number"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	State     string    `json:"state"`
+	Author    string    `json:"author"`
+	Assignee  *Assignee `json:"assignee,omitempty"`
+	CreatedAt string    `json:"created_at"`
+	ClosedAt  string    `json:"closed_at,omitempty"`
+}
+
+type IssueComment struct {
+	ID        string `json:"id"`
+	Body      string `json:"body"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+}
+
+type IssueDetail struct {
+	Issue    Issue          `json:"issue"`
+	Comments []IssueComment `json:"comments"`
+}
+
+type CreateIssueInput struct {
+	Title          string `json:"title"`
+	Body           string `json:"body,omitempty"`
+	AssigneeUserID string `json:"assignee_user_id,omitempty"`
+}
+
+func (c *Client) ListIssues(ctx context.Context, owner, name, state string) ([]Issue, error) {
+	path := "/repos/" + owner + "/" + name + "/issues"
+	if state != "" && state != "all" {
+		path += "?state=" + state
+	}
+	var out []Issue
+	err := c.request(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
+func (c *Client) GetIssue(ctx context.Context, owner, name string, number int) (IssueDetail, error) {
+	var out IssueDetail
+	err := c.request(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/issues/%d", owner, name, number), nil, &out)
+	return out, err
+}
+
+func (c *Client) CreateIssue(ctx context.Context, owner, name string, in CreateIssueInput) (Issue, error) {
+	var out Issue
+	err := c.request(ctx, http.MethodPost,
+		"/repos/"+owner+"/"+name+"/issues", in, &out)
+	return out, err
+}
+
+func (c *Client) CommentOnIssue(ctx context.Context, owner, name string, number int, body string) (IssueComment, error) {
+	var out IssueComment
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, name, number),
+		map[string]string{"body": body}, &out)
+	return out, err
+}
+
+func (c *Client) CloseIssue(ctx context.Context, owner, name string, number int) (Issue, error) {
+	var out Issue
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/close", owner, name, number), nil, &out)
+	return out, err
+}
+
+func (c *Client) ReopenIssue(ctx context.Context, owner, name string, number int) (Issue, error) {
+	var out Issue
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/reopen", owner, name, number), nil, &out)
+	return out, err
+}
+
+type Run struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+func (c *Client) AssignAgent(ctx context.Context, owner, name string, number int) (Run, error) {
+	var out Run
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/assign-agent", owner, name, number), nil, &out)
+	return out, err
+}
+
 // ---- Me ------------------------------------------------------------------
 
 type Me struct {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/codecollab-co/forge/forge-cli/internal/auth"
 	authcmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/auth"
+	issuecmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/issue"
 	repocmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/repo"
 )
 
@@ -50,5 +51,6 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	root.SetArgs(args)
 	root.AddCommand(authcmd.New(stdout, stderr, store))
 	root.AddCommand(repocmd.New(stdout, stderr, store))
+	root.AddCommand(issuecmd.New(stdout, stderr, store))
 	return root.Execute()
 }
