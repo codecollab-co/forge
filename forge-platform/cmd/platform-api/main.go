@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/supertokens/supertokens-golang/recipe/session"
+	"github.com/supertokens/supertokens-golang/recipe/session/sessmodels"
 	"github.com/supertokens/supertokens-golang/supertokens"
 
 	"github.com/codecollab-co/forge/forge-platform/internal/auth"
@@ -112,6 +113,7 @@ func main() {
 	r.Use(corsMiddleware(websiteDomain))
 	r.Use(bearerAuthMiddleware(signer, usersRepo))
 	r.Use(supertokensMiddleware())
+	r.Use(optionalSessionMiddleware(usersRepo))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "forge-platform"})
@@ -351,15 +353,8 @@ func main() {
 	}))
 
 	r.Get("/repos/{owner}/{name}", func(w http.ResponseWriter, req *http.Request) {
-		owner := chi.URLParam(req, "owner")
-		name := chi.URLParam(req, "name")
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
-		if err != nil {
-			if errors.Is(err, repos.ErrNotFound) {
-				http.NotFound(w, req)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		writeJSON(w, http.StatusOK, repoResponse(repo, repo.OwnerHandle))
@@ -372,9 +367,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if actor.ID != repo.OwnerID {
@@ -430,9 +424,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if actor.ID != repo.OwnerID {
@@ -454,9 +447,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		// Read access required (private repos: owner only).
@@ -584,9 +576,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
@@ -629,9 +620,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if actor.ID != repo.OwnerID {
@@ -660,9 +650,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if actor.ID != repo.OwnerID {
@@ -677,9 +666,8 @@ func main() {
 	}))
 
 	r.Get("/repos/{owner}/{name}/commits/{branch}", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
@@ -702,9 +690,8 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/commit/{oid}", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		c, diff, err := gitStorage.GetCommit(req.Context(), repo.OwnerHandle, repo.Name, chi.URLParam(req, "oid"))
@@ -726,15 +713,8 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/branches", func(w http.ResponseWriter, req *http.Request) {
-		owner := chi.URLParam(req, "owner")
-		name := chi.URLParam(req, "name")
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
-		if err != nil {
-			if errors.Is(err, repos.ErrNotFound) {
-				http.NotFound(w, req)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		def, _ := gitStorage.DefaultBranch(req.Context(), repo.OwnerHandle, repo.Name)
@@ -743,17 +723,10 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/tree/{ref}", func(w http.ResponseWriter, req *http.Request) {
-		owner := chi.URLParam(req, "owner")
-		name := chi.URLParam(req, "name")
 		ref := chi.URLParam(req, "ref")
 		dir := strings.TrimPrefix(req.URL.Query().Get("path"), "/")
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
-		if err != nil {
-			if errors.Is(err, repos.ErrNotFound) {
-				http.NotFound(w, req)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		entries, err := gitStorage.ReadTree(req.Context(), repo.OwnerHandle, repo.Name, ref, dir)
@@ -771,21 +744,14 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/blob/{ref}", func(w http.ResponseWriter, req *http.Request) {
-		owner := chi.URLParam(req, "owner")
-		name := chi.URLParam(req, "name")
 		ref := chi.URLParam(req, "ref")
 		path := strings.TrimPrefix(req.URL.Query().Get("path"), "/")
 		if path == "" {
 			http.Error(w, "missing path", http.StatusBadRequest)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
-		if err != nil {
-			if errors.Is(err, repos.ErrNotFound) {
-				http.NotFound(w, req)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		blob, err := gitStorage.ReadBlob(req.Context(), repo.OwnerHandle, repo.Name, ref, path)
@@ -958,9 +924,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
@@ -1025,9 +990,8 @@ func main() {
 	}))
 
 	r.Get("/repos/{owner}/{name}/pulls", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		state := pulls.State(req.URL.Query().Get("state"))
@@ -1044,9 +1008,8 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/pulls/{number}", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		number, err := strconv.Atoi(chi.URLParam(req, "number"))
@@ -1079,9 +1042,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		number, err := strconv.Atoi(chi.URLParam(req, "number"))
@@ -1125,9 +1087,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		// Only the repo owner may merge at MVP (PermissionChecker.ActionPush).
@@ -1213,9 +1174,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		if !permissions.Allow(permissions.Actor{UserID: actor.ID},
@@ -1252,9 +1212,8 @@ func main() {
 	}))
 
 	r.Get("/repos/{owner}/{name}/issues", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		state := issues.State(req.URL.Query().Get("state"))
@@ -1271,9 +1230,8 @@ func main() {
 	})
 
 	r.Get("/repos/{owner}/{name}/issues/{number}", func(w http.ResponseWriter, req *http.Request) {
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		number, err := strconv.Atoi(chi.URLParam(req, "number"))
@@ -1304,9 +1262,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		number, err := strconv.Atoi(chi.URLParam(req, "number"))
@@ -1358,9 +1315,8 @@ func main() {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
-		if err != nil {
-			httpRepoErr(w, err)
+		repo, ok := loadReadableRepo(w, req, reposStore, chi.URLParam(req, "owner"), chi.URLParam(req, "name"))
+		if !ok {
 			return
 		}
 		number, err := strconv.Atoi(chi.URLParam(req, "number"))
@@ -2080,6 +2036,55 @@ func issueStateChange(
 type ctxKey string
 
 const actorCtxKey ctxKey = "forge.actor"
+
+// optionalSessionMiddleware populates actorCtxKey from a SuperTokens
+// session cookie if one is present, without erroring on absence.
+// Bearer auth (set by bearerAuthMiddleware) takes precedence.
+func optionalSessionMiddleware(usersRepo *users.Repo) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if actorFromContext(r.Context()) != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			required := false
+			sess, err := session.GetSession(r, w, &sessmodels.VerifySessionOptions{
+				SessionRequired: &required,
+			})
+			if err == nil && sess != nil {
+				stID := sess.GetUserID()
+				if u, _ := usersRepo.BySuperTokensID(r.Context(), stID); u != nil {
+					r = r.WithContext(context.WithValue(r.Context(), actorCtxKey, u))
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// loadReadableRepo loads a repo and enforces ActionRead via PermissionChecker.
+// Returns (repo, true) on success; on failure writes a 404 response and
+// returns (nil, false) — callers can early-return.
+func loadReadableRepo(w http.ResponseWriter, req *http.Request, reposStore *repos.Store, owner, name string) (*repos.Repository, bool) {
+	repo, err := reposStore.GetByOwnerHandleAndName(req.Context(), owner, name)
+	if err != nil {
+		if errors.Is(err, repos.ErrNotFound) {
+			http.NotFound(w, req)
+			return nil, false
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	actor := permissions.Actor{IsAnonymous: true}
+	if u := actorFromContext(req.Context()); u != nil {
+		actor = permissions.Actor{UserID: u.ID}
+	}
+	if !permissions.Allow(actor, permissions.Repo{OwnerID: repo.OwnerID, Visibility: repo.Visibility}, permissions.ActionRead) {
+		http.NotFound(w, req)
+		return nil, false
+	}
+	return repo, true
+}
 
 func bearerAuthMiddleware(signer *auth.Signer, usersRepo *users.Repo) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
