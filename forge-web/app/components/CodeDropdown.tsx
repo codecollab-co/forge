@@ -38,7 +38,7 @@ export function CodeDropdown({ cloneURL }: { cloneURL: string }) {
             <CopyButton text={cloneURL} />
           </div>
           <p className="mt-2 text-xs text-zinc-500">
-            Use your <a href="/me/git-secret" className="underline">git secret</a> as the password on first push.
+            Use a <a href="/me/tokens" className="underline">personal access token</a> as the password on first push.
           </p>
         </div>
       )}

@@ -109,8 +109,8 @@ export function TopNav() {
                     <Link href="/repos" onClick={() => setMenuOpen(false)} className="block px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
                       Your repositories
                     </Link>
-                    <Link href="/me/git-secret" onClick={() => setMenuOpen(false)} className="block px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
-                      Manage git secret
+                    <Link href="/me/tokens" onClick={() => setMenuOpen(false)} className="block px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                      Personal access tokens
                     </Link>
                     <button
                       onClick={onSignOut}

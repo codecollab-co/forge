@@ -49,11 +49,18 @@ export type Branches = {
   branches: string[] | null;
 };
 
-export type GitSecretInfo = {
-  exists: boolean;
-  created_at: string | null;
+export type TokenSummary = {
+  id: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+  expires_at: string | null;
   last_used_at: string | null;
+};
+
+export type TokenListResponse = {
   username: string;
+  tokens: TokenSummary[];
 };
 
 export type PRState = "open" | "merged" | "closed";
@@ -216,9 +223,18 @@ export const api = {
       `/repos/${owner}/${name}/tree/${encodeURIComponent(ref)}?path=${encodeURIComponent(dir)}`,
     ),
 
-  getGitSecretInfo: () => request<GitSecretInfo>("GET", "/me/git-secret"),
-  generateGitSecret: () =>
-    request<{ username: string; secret: string }>("POST", "/me/git-secret"),
+  listTokens: () => request<TokenListResponse>("GET", "/me/tokens"),
+  mintToken: (name: string, expiresInDays?: number) =>
+    request<{ username: string; token: TokenSummary; secret: string }>(
+      "POST", "/me/tokens",
+      { name, expires_in_days: expiresInDays ?? 0 },
+    ),
+  revokeToken: async (id: string) => {
+    const res = await fetch(`${apiDomain}/me/tokens/${id}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}`);
+  },
 
   listPulls: (owner: string, name: string, state?: PRState) =>
     request<PullRequest[]>(

@@ -17,12 +17,14 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/git"
 	"github.com/codecollab-co/forge/forge-platform/internal/permissions"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
+	"github.com/codecollab-co/forge/forge-platform/internal/tokens"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
 
 type Handler struct {
 	Repos      *repos.Store
 	Users      *users.Repo
+	Tokens     *tokens.Store
 	GitStorage *git.Repository
 }
 
@@ -95,14 +97,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cgiHandler.ServeHTTP(w, r)
 }
 
-// authenticate parses HTTP Basic credentials. Returns (actor, ok). When the
-// header is absent or invalid, ok=false (anonymous).
+// authenticate parses HTTP Basic credentials and verifies the password
+// against the user's Personal Access Tokens. Returns (actor, ok).
 func (h *Handler) authenticate(r *http.Request) (permissions.Actor, bool) {
 	handle, secret, hasAuth := r.BasicAuth()
 	if !hasAuth || handle == "" || secret == "" {
 		return permissions.Actor{IsAnonymous: true}, false
 	}
-	user, err := h.Users.VerifyGitSecret(r.Context(), handle, secret)
+	user, err := h.Tokens.Verify(r.Context(), handle, secret)
 	if err != nil || user == nil {
 		return permissions.Actor{IsAnonymous: true}, false
 	}

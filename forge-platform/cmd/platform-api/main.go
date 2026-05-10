@@ -33,6 +33,7 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/pulls"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
 	"github.com/codecollab-co/forge/forge-platform/internal/runs"
+	"github.com/codecollab-co/forge/forge-platform/internal/tokens"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
 
@@ -64,6 +65,7 @@ func main() {
 	pullsStore := pulls.NewStore(pool)
 	issuesStore := issues.NewStore(pool)
 	runsStore := runs.NewStore(pool)
+	tokensStore := tokens.NewStore(pool)
 
 	gitStorage, err := gitstorage.New(reposDir)
 	if err != nil {
@@ -84,7 +86,7 @@ func main() {
 		log.Fatalf("supertokens init: %v", err)
 	}
 
-	gitHTTP := &githttp.Handler{Repos: reposStore, Users: usersRepo, GitStorage: gitStorage}
+	gitHTTP := &githttp.Handler{Repos: reposStore, Users: usersRepo, Tokens: tokensStore, GitStorage: gitStorage}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -783,39 +785,80 @@ func main() {
 		_, _ = w.Write(blob)
 	})
 
-	r.Get("/me/git-secret", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/me/tokens", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
 		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
 		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
 		if err != nil || u == nil {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		info, err := usersRepo.GitSecretInfo(req.Context(), u.ID)
+		list, err := tokensStore.List(req.Context(), u.ID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		out := make([]map[string]any, 0, len(list))
+		for _, t := range list {
+			out = append(out, tokenResponse(t))
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"exists":       info.Exists,
-			"created_at":   info.CreatedAt,
-			"last_used_at": info.LastUsedAt,
-			"username":     u.Handle,
+			"username": u.Handle,
+			"tokens":   out,
 		})
 	}))
 
-	r.Post("/me/git-secret", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+	r.Post("/me/tokens", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
 		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
 		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
 		if err != nil || u == nil {
 			http.Error(w, "user not provisioned", http.StatusUnauthorized)
 			return
 		}
-		secret, err := usersRepo.GenerateGitSecret(req.Context(), u.ID)
+		var body struct {
+			Name      string `json:"name"`
+			ExpiresIn int    `json:"expires_in_days"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Name) == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		ttl := time.Duration(body.ExpiresIn) * 24 * time.Hour
+		plain, tok, err := tokensStore.Mint(req.Context(), u.ID, body.Name, nil, ttl)
 		if err != nil {
+			if errors.Is(err, tokens.ErrDuplicateName) {
+				http.Error(w, "a token with that name already exists", http.StatusConflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"username": u.Handle, "secret": secret})
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"username": u.Handle,
+			"token":    tokenResponse(tok),
+			"secret":   plain, // shown once
+		})
+	}))
+
+	r.Delete("/me/tokens/{id}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		if err := tokensStore.Revoke(req.Context(), u.ID, chi.URLParam(req, "id")); err != nil {
+			if errors.Is(err, tokens.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	// ---- Pull Requests --------------------------------------------------
@@ -2014,6 +2057,17 @@ func fmtPRNumber(n int) string {
 		return ""
 	}
 	return strconv.Itoa(n)
+}
+
+func tokenResponse(t *tokens.Token) map[string]any {
+	return map[string]any{
+		"id":           t.ID,
+		"name":         t.Name,
+		"scopes":       t.Scopes,
+		"created_at":   t.CreatedAt,
+		"expires_at":   t.ExpiresAt,
+		"last_used_at": t.LastUsedAt,
+	}
 }
 
 func meResponse(u *users.User) map[string]any {

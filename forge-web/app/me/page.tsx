@@ -125,8 +125,8 @@ export default function MePage() {
       <section className="rounded-md border border-zinc-200 p-6 dark:border-zinc-800">
         <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Access</h2>
         <p className="mt-2 text-sm">
-          <Link href="/me/git-secret" className="underline">Manage git secret</Link>
-          <span className="ml-2 text-xs text-zinc-500">— used as your <code>git push</code> password.</span>
+          <Link href="/me/tokens" className="underline">Personal access tokens</Link>
+          <span className="ml-2 text-xs text-zinc-500">— used as your <code>git push</code> password and by the CLI.</span>
         </p>
       </section>
     </main>
