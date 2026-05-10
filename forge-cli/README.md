@@ -7,7 +7,7 @@
 **macOS / Linux (Homebrew):**
 
 ```bash
-brew install codecollab-co/forge/forge
+brew install codecollab-co/tap/forge
 ```
 
 **curl | sh:**

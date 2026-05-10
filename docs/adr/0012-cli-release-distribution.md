@@ -12,7 +12,7 @@ ADR-0010 commits us to releasing `forge` via Homebrew, `curl … | sh`, and per-
 - **Trigger: tag push (`v*`).** A GitHub Actions workflow runs `goreleaser release` on every `v*.*.*` tag.
 - **Channels:**
   - **GitHub Releases** — primary channel. All tarballs + checksums live here.
-  - **Homebrew tap** — `codecollab-co/homebrew-forge` repo, auto-updated by GoReleaser on each tag. Install: `brew install codecollab-co/forge/forge`.
+  - **Homebrew tap** — `codecollab-co/homebrew-tap` (the existing org-level tap shared with other CodeCollab tools). GoReleaser writes `Formula/forge.rb` to that repo on each tag. Install: `brew install codecollab-co/tap/forge`.
   - **`curl … | sh` install script** — checked into this repo at `scripts/install-forge.sh`, fetches the latest GitHub release, verifies sha256 against the published checksums file, installs to `/usr/local/bin` (or `$FORGE_INSTALL_DIR`).
   - **Scoop bucket** — `codecollab-co/scoop-forge` for Windows. Auto-updated by GoReleaser. Install: `scoop install forge`.
 - **Signing:**
@@ -22,8 +22,8 @@ ADR-0010 commits us to releasing `forge` via Homebrew, `curl … | sh`, and per-
 
 ## Consequences
 
-- A new GitHub repo `codecollab-co/homebrew-forge` is required, owned by the same org. GoReleaser pushes to it on each release using a `HOMEBREW_TAP_GITHUB_TOKEN` secret with `contents: write` on the tap repo.
-- Same applies for `codecollab-co/scoop-forge`.
+- The existing `codecollab-co/homebrew-tap` is reused — sharing one tap across all CodeCollab tools means users add the tap once. GoReleaser pushes `Formula/forge.rb` on each release using a `HOMEBREW_TAP_GITHUB_TOKEN` secret with `contents: write` on the tap repo.
+- A new `codecollab-co/scoop-forge` repo is created for Windows (Scoop's convention is one bucket per tool family).
 - Cosign keyless signatures don't require us to manage signing keys, but they do require Sigstore's public infrastructure to be available. Acceptable tradeoff for v0.1.
 - macOS users get a worse first-run UX than `gh` users. Acceptable until volume justifies the Apple Developer account.
 - Every release auto-publishes to all channels — there's no staging tier. Consider a `pre-release` flag in GoReleaser when we want to ship release candidates.

@@ -67,10 +67,13 @@ signs:
 
 brews:
   - name: forge
+    # Lives in the existing codecollab-co tap so users get
+    # `brew install codecollab-co/tap/forge` — one tap, many tools.
     repository:
       owner: codecollab-co
-      name: homebrew-forge
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
     homepage: "https://github.com/codecollab-co/forge"
     description: "Forge CLI — interact with Forge from your terminal"
     license: Apache-2.0
@@ -101,7 +104,7 @@ release:
   footer: |
     ### Install
     ```bash
-    brew install codecollab-co/forge/forge          # macOS / Linux
+    brew install codecollab-co/tap/forge          # macOS / Linux
     curl -fsSL https://raw.githubusercontent.com/codecollab-co/forge/main/scripts/install-forge.sh | sh
     scoop install forge                              # Windows (after `scoop bucket add forge https://github.com/codecollab-co/scoop-forge`)
     ```
