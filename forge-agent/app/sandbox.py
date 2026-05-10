@@ -7,24 +7,24 @@ single-module change.
 Backends:
   - InMemoryFake: used by tests and as the local-dev default when E2B_API_KEY
     is unset. No real isolation; returns synthetic IDs.
-  - E2BProvider: real E2B sandboxes. **Wired but not yet implemented** —
-    the slice-7 stub doesn't actually execute anything inside the sandbox,
-    so we keep the integration as a follow-up. The protocol is here so
-    swapping implementations is a one-line change in the factory below.
+  - E2BProvider: real E2B sandboxes via the e2b SDK. Workspace I/O is sync
+    and called from runner.py via asyncio.to_thread so the event loop and
+    heartbeat keep ticking.
 """
 
 from __future__ import annotations
 
 import os
 import uuid
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 
-@dataclass(frozen=True)
+@dataclass
 class Sandbox:
     id: str
-    backend: str  # "in-memory" | "e2b" | ...
+    backend: str   # "in-memory" | "e2b" | ...
+    handle: Any = None  # opaque; the workspace knows what to do with it
 
 
 class SandboxProvider(Protocol):
@@ -50,19 +50,28 @@ class InMemoryFake:
 
 
 class E2BProvider:
-    """Placeholder. Real implementation lands as a small follow-up: the slice-7
-    stub does its file write through the platform-api internal commit endpoint,
-    so it doesn't yet need to execute inside an E2B sandbox. When slice 8 lands
-    the real Agent loop, this becomes a thin wrapper over `e2b_code_interpreter`."""
+    """Real E2B sandboxes. Lazily imports the SDK so the agent boots even
+    when e2b isn't installed (relevant for tests)."""
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, timeout_s: int = 30 * 60) -> None:
         self._api_key = api_key
+        self._timeout = timeout_s
 
-    async def acquire(self, *, run_id: str) -> Sandbox:  # pragma: no cover - placeholder
-        raise NotImplementedError("E2BProvider.acquire — lands with slice 8")
+    async def acquire(self, *, run_id: str) -> Sandbox:
+        import asyncio
+        from e2b import Sandbox as E2BSandbox
 
-    async def release(self, sandbox: Sandbox) -> None:  # pragma: no cover
-        raise NotImplementedError("E2BProvider.release — lands with slice 8")
+        def _create() -> Any:
+            return E2BSandbox(api_key=self._api_key, timeout=self._timeout)
+
+        sb = await asyncio.to_thread(_create)
+        return Sandbox(id=sb.sandbox_id, backend="e2b", handle=sb)
+
+    async def release(self, sandbox: Sandbox) -> None:
+        import asyncio
+        if sandbox.handle is None:
+            return
+        await asyncio.to_thread(sandbox.handle.kill)
 
 
 def from_env() -> SandboxProvider:

@@ -7,6 +7,7 @@ raises. No HTTP, no DB, no sandbox lifecycle — those belong to the Runner.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -110,7 +111,9 @@ async def run_agent(
         final_summary: str | None = None
         for tu in resp.tool_uses:
             await event_sink("tool.use", {"name": tu.name, "input": tu.input, "id": tu.id})
-            out = execute_tool(tu.name, tu.input, workspace)
+            # Tool execution may hit a network-backed Workspace (E2B). Run it
+            # in a thread so the event loop + heartbeat keep ticking.
+            out = await asyncio.to_thread(execute_tool, tu.name, tu.input, workspace)
             await event_sink(
                 "tool.result",
                 {"id": tu.id, "name": tu.name, "is_error": out.is_error,

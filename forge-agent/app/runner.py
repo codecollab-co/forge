@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 
 from app.agent_loop import AgentLoopError, run_agent
+from app.e2b_workspace import E2BWorkspace
 from app.model_client import ModelClient, from_env as model_from_env
 from app.platform_client import PlatformClient
 from app.run_pubsub import RunEvent, RunPubSub
@@ -187,7 +188,13 @@ class Runner:
         # 3. Commit changed files; open the PR.
         snapshot = await self._platform.snapshot(request.repo_id)
         seed = {f["path"]: f["content"] for f in snapshot["files"]}
-        vfs = VirtualFilesystem.seeded(seed)
+        # Pick the right workspace for the sandbox backend.
+        if sandbox is not None and sandbox.backend == "e2b" and sandbox.handle is not None:
+            workspace = E2BWorkspace(sandbox.handle)
+            await asyncio.to_thread(workspace.seed, seed)
+        else:
+            workspace = VirtualFilesystem.seeded(seed)
+        vfs = workspace  # alias used downstream
 
         model = self._model or model_from_env()
 
@@ -218,7 +225,7 @@ class Runner:
             },
         )
 
-        changed = vfs.changed_files()
+        changed = await asyncio.to_thread(vfs.changed_files)
         if not changed:
             # Agent finished without changing anything. Treat as failure so
             # the user sees that no PR was opened.
