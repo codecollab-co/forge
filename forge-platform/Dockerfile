@@ -8,8 +8,9 @@ RUN CGO_ENABLED=0 go build -o /out/platform-api ./cmd/platform-api
 FROM alpine:3.20
 RUN apk add --no-cache git ca-certificates && \
     addgroup -S forge && adduser -S -G forge forge && \
-    mkdir -p /var/lib/forge/repos && chown -R forge:forge /var/lib/forge
+    mkdir -p /var/lib/forge/repos /home/forge && \
+    chown -R forge:forge /var/lib/forge /home/forge
 COPY --from=build /out/platform-api /usr/local/bin/platform-api
 USER forge
-EXPOSE 8080
+EXPOSE 8080 2222
 ENTRYPOINT ["/usr/local/bin/platform-api"]

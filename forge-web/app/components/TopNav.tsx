@@ -112,6 +112,9 @@ export function TopNav() {
                     <Link href="/me/tokens" onClick={() => setMenuOpen(false)} className="block px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
                       Personal access tokens
                     </Link>
+                    <Link href="/me/ssh-keys" onClick={() => setMenuOpen(false)} className="block px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                      SSH keys
+                    </Link>
                     <button
                       onClick={onSignOut}
                       className="block w-full border-t border-zinc-200 px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"

@@ -128,6 +128,10 @@ export default function MePage() {
           <Link href="/me/tokens" className="underline">Personal access tokens</Link>
           <span className="ml-2 text-xs text-zinc-500">— used as your <code>git push</code> password and by the CLI.</span>
         </p>
+        <p className="mt-2 text-sm">
+          <Link href="/me/ssh-keys" className="underline">SSH keys</Link>
+          <span className="ml-2 text-xs text-zinc-500">— authorise machines to clone/push over SSH.</span>
+        </p>
       </section>
     </main>
   );

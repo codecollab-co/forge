@@ -33,6 +33,8 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/pulls"
 	"github.com/codecollab-co/forge/forge-platform/internal/repos"
 	"github.com/codecollab-co/forge/forge-platform/internal/runs"
+	"github.com/codecollab-co/forge/forge-platform/internal/sshd"
+	"github.com/codecollab-co/forge/forge-platform/internal/sshkeys"
 	"github.com/codecollab-co/forge/forge-platform/internal/tokens"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
@@ -66,11 +68,25 @@ func main() {
 	issuesStore := issues.NewStore(pool)
 	runsStore := runs.NewStore(pool)
 	tokensStore := tokens.NewStore(pool)
+	sshKeysStore := sshkeys.NewStore(pool)
 
 	gitStorage, err := gitstorage.New(reposDir)
 	if err != nil {
 		log.Fatalf("git storage: %v", err)
 	}
+
+	// SSH server for git-over-SSH (slice 11). Bind defaults to :2222 in dev
+	// (host port 22 conflicts with the macOS sshd); production NLB-fronts 22.
+	sshAddr := envOr("SSH_ADDR", ":2222")
+	sshHostKey := envOr("SSH_HOST_KEY", "/home/forge/host_ed25519")
+	go func() {
+		if err := (&sshd.Server{
+			Addr: sshAddr, HostKeyPath: sshHostKey,
+			Repos: reposStore, Keys: sshKeysStore, GitStorage: gitStorage,
+		}).Run(context.Background()); err != nil {
+			log.Printf("sshd: %v", err)
+		}
+	}()
 
 	if err := auth.InitSuperTokens(func(ctx context.Context, e auth.SignInUp) error {
 		_, err := usersRepo.UpsertOnSignInUp(ctx, users.SignInUpInput{
@@ -841,6 +857,78 @@ func main() {
 			"token":    tokenResponse(tok),
 			"secret":   plain, // shown once
 		})
+	}))
+
+	r.Get("/me/ssh-keys", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		list, err := sshKeysStore.List(req.Context(), u.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, k := range list {
+			out = append(out, sshKeyResponse(k))
+		}
+		writeJSON(w, http.StatusOK, out)
+	}))
+
+	r.Post("/me/ssh-keys", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			Name      string `json:"name"`
+			PublicKey string `json:"public_key"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.PublicKey) == "" {
+			http.Error(w, "name and public_key are required", http.StatusBadRequest)
+			return
+		}
+		k, err := sshKeysStore.Add(req.Context(), u.ID, body.Name, body.PublicKey)
+		if err != nil {
+			if errors.Is(err, sshkeys.ErrDuplicate) {
+				http.Error(w, "key already registered", http.StatusConflict)
+				return
+			}
+			if errors.Is(err, sshkeys.ErrInvalidKey) {
+				http.Error(w, "invalid public key", http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusCreated, sshKeyResponse(k))
+	}))
+
+	r.Delete("/me/ssh-keys/{id}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || u == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		if err := sshKeysStore.Revoke(req.Context(), u.ID, chi.URLParam(req, "id")); err != nil {
+			if errors.Is(err, sshkeys.ErrNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	r.Delete("/me/tokens/{id}", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
@@ -2057,6 +2145,17 @@ func fmtPRNumber(n int) string {
 		return ""
 	}
 	return strconv.Itoa(n)
+}
+
+func sshKeyResponse(k *sshkeys.SSHKey) map[string]any {
+	return map[string]any{
+		"id":           k.ID,
+		"name":         k.Name,
+		"fingerprint":  k.Fingerprint,
+		"public_key":   k.PublicKey,
+		"last_used_at": k.LastUsedAt,
+		"created_at":   k.CreatedAt,
+	}
 }
 
 func tokenResponse(t *tokens.Token) map[string]any {

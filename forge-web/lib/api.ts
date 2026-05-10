@@ -63,6 +63,15 @@ export type TokenListResponse = {
   tokens: TokenSummary[];
 };
 
+export type SSHKey = {
+  id: string;
+  name: string;
+  fingerprint: string;
+  public_key: string;
+  last_used_at: string | null;
+  created_at: string;
+};
+
 export type PRState = "open" | "merged" | "closed";
 
 export type PullRequest = {
@@ -231,6 +240,16 @@ export const api = {
     ),
   revokeToken: async (id: string) => {
     const res = await fetch(`${apiDomain}/me/tokens/${id}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}`);
+  },
+
+  listSSHKeys: () => request<SSHKey[]>("GET", "/me/ssh-keys"),
+  addSSHKey: (name: string, publicKey: string) =>
+    request<SSHKey>("POST", "/me/ssh-keys", { name, public_key: publicKey }),
+  revokeSSHKey: async (id: string) => {
+    const res = await fetch(`${apiDomain}/me/ssh-keys/${id}`, {
       method: "DELETE", credentials: "include",
     });
     if (!res.ok && res.status !== 204) throw new Error(`DELETE → ${res.status}`);
