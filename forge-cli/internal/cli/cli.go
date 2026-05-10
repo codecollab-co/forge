@@ -13,6 +13,7 @@ import (
 	authcmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/auth"
 	issuecmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/issue"
 	repocmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/repo"
+	runcmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/run"
 )
 
 // Version is overridden at build time via -ldflags="-X .../cli.Version=v0.1.0"
@@ -52,5 +53,6 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	root.AddCommand(authcmd.New(stdout, stderr, store))
 	root.AddCommand(repocmd.New(stdout, stderr, store))
 	root.AddCommand(issuecmd.New(stdout, stderr, store))
+	root.AddCommand(runcmd.New(stdout, stderr, store))
 	return root.Execute()
 }

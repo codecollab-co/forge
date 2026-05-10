@@ -1279,7 +1279,9 @@ func main() {
 				`SELECT number FROM platform.pull_requests WHERE id = $1`, *run.PRID).
 				Scan(&prNumber)
 		}
-		writeJSON(w, http.StatusOK, runResponse(run, fmtPRNumber(prNumber)))
+		resp := runResponse(run, fmtPRNumber(prNumber))
+		resp["stream_url"] = envOr("AGENT_PUBLIC_URL", "http://localhost:8081") + "/runs/" + run.ID + "/stream"
+		writeJSON(w, http.StatusOK, resp)
 	})
 
 	r.Post("/runs/{id}/cancel", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {

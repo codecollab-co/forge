@@ -251,8 +251,44 @@ func (c *Client) ReopenIssue(ctx context.Context, owner, name string, number int
 }
 
 type Run struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
+	ID              string `json:"id"`
+	State           string `json:"state"`
+	CancelRequested bool   `json:"cancel_requested,omitempty"`
+	SandboxID       string `json:"sandbox_id,omitempty"`
+	ErrorCategory   string `json:"error_category,omitempty"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	StartedAt       string `json:"started_at,omitempty"`
+	FinishedAt      string `json:"finished_at,omitempty"`
+	PRNumber        string `json:"pr_number,omitempty"`
+	StreamURL       string `json:"stream_url,omitempty"`
+}
+
+type DashboardRun struct {
+	ID          string `json:"id"`
+	State       string `json:"state"`
+	IssueNumber int    `json:"issue_number"`
+	IssueTitle  string `json:"issue_title"`
+	RepoOwner   string `json:"repo_owner"`
+	RepoName    string `json:"repo_name"`
+	PRNumber    *int   `json:"pr_number,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func (c *Client) ListMyRuns(ctx context.Context) ([]DashboardRun, error) {
+	var out []DashboardRun
+	err := c.request(ctx, http.MethodGet, "/me/runs", nil, &out)
+	return out, err
+}
+
+func (c *Client) GetRun(ctx context.Context, id string) (Run, error) {
+	var out Run
+	err := c.request(ctx, http.MethodGet, "/runs/"+id, nil, &out)
+	return out, err
+}
+
+func (c *Client) CancelRun(ctx context.Context, id string) error {
+	return c.request(ctx, http.MethodPost, "/runs/"+id+"/cancel", nil, nil)
 }
 
 func (c *Client) AssignAgent(ctx context.Context, owner, name string, number int) (Run, error) {
