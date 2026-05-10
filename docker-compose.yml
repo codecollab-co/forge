@@ -16,6 +16,7 @@ services:
       - ./forge-platform/migrations/04_pulls.sql:/docker-entrypoint-initdb.d/04_pulls.sql
       - ./forge-platform/migrations/05_issues.sql:/docker-entrypoint-initdb.d/05_issues.sql
       - ./forge-platform/migrations/06_runs.sql:/docker-entrypoint-initdb.d/06_runs.sql
+      - ./forge-platform/migrations/07_device_codes.sql:/docker-entrypoint-initdb.d/07_device_codes.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
       interval: 2s

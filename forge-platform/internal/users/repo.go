@@ -76,6 +76,26 @@ func (r *Repo) UpsertOnSignInUp(ctx context.Context, in SignInUpInput) (*User, e
 	return u, nil
 }
 
+func (r *Repo) ByID(ctx context.Context, id string) (*User, error) {
+	row := r.pool.QueryRow(ctx, `
+        SELECT id, supertokens_id, provider, external_id, handle,
+               COALESCE(email,''), COALESCE(display_name,''), COALESCE(avatar_url,''),
+               created_at, updated_at
+          FROM platform.users WHERE id = $1
+    `, id)
+	u := &User{}
+	if err := row.Scan(
+		&u.ID, &u.SuperTokensID, &u.Provider, &u.ExternalID, &u.Handle,
+		&u.Email, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return u, nil
+}
+
 func (r *Repo) BySuperTokensID(ctx context.Context, stID string) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
         SELECT id, supertokens_id, provider, external_id, handle,

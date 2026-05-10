@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +92,7 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware(websiteDomain))
+	r.Use(bearerAuthMiddleware(signer, usersRepo))
 	r.Use(supertokensMiddleware())
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -191,19 +194,27 @@ func main() {
 		writeJSON(w, http.StatusOK, out)
 	}))
 
-	r.Get("/me", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
-		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
-		u, err := usersRepo.BySuperTokensID(req.Context(), stID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	r.Get("/me", func(w http.ResponseWriter, req *http.Request) {
+		// CLI Bearer-token path.
+		if actor := actorFromContext(req.Context()); actor != nil {
+			writeJSON(w, http.StatusOK, meResponse(actor))
 			return
 		}
-		if u == nil {
-			http.Error(w, "user not provisioned", http.StatusNotFound)
-			return
-		}
-		writeJSON(w, http.StatusOK, meResponse(u))
-	}))
+		// Web SuperTokens-session path.
+		session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+			stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+			u, err := usersRepo.BySuperTokensID(req.Context(), stID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if u == nil {
+				http.Error(w, "user not provisioned", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, http.StatusOK, meResponse(u))
+		})(w, req)
+	})
 
 	r.Post("/repos", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
 		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
@@ -1288,6 +1299,112 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{"cancel_requested": true})
 	}))
 
+	// ---- OAuth device-code (RFC 8628) for the forge CLI ---------------
+
+	r.Post("/oauth/device/code", func(w http.ResponseWriter, req *http.Request) {
+		deviceCode, err := randomURLSafe(32)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		userCode, err := randomUserCode()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		const ttl = 10 * time.Minute
+		if _, err := pool.Exec(req.Context(),
+			`INSERT INTO platform.device_codes (device_code, user_code, expires_at) VALUES ($1, $2, NOW() + $3::interval)`,
+			deviceCode, userCode, ttl.String(),
+		); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"device_code":      deviceCode,
+			"user_code":        userCode,
+			"verification_uri": websiteDomain + "/device",
+			"expires_in":       int(ttl.Seconds()),
+			"interval":         5,
+		})
+	})
+
+	r.Post("/oauth/device/approve", session.VerifySession(nil, func(w http.ResponseWriter, req *http.Request) {
+		stID := session.GetSessionFromRequestContext(req.Context()).GetUserID()
+		actor, err := usersRepo.BySuperTokensID(req.Context(), stID)
+		if err != nil || actor == nil {
+			http.Error(w, "user not provisioned", http.StatusUnauthorized)
+			return
+		}
+		var body struct{ UserCode string `json:"user_code"` }
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		userCode := strings.ToUpper(strings.TrimSpace(body.UserCode))
+		cmd, err := pool.Exec(req.Context(), `
+            UPDATE platform.device_codes
+               SET status = 'approved', user_id = $2, approved_at = NOW()
+             WHERE user_code = $1 AND status = 'pending' AND expires_at > NOW()
+        `, userCode, actor.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if cmd.RowsAffected() == 0 {
+			http.Error(w, "code not found, expired, or already used", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "approved"})
+	}))
+
+	r.Post("/oauth/device/token", func(w http.ResponseWriter, req *http.Request) {
+		var body struct{ DeviceCode string `json:"device_code"` }
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+			return
+		}
+		var status string
+		var userID *string
+		var expiresAt time.Time
+		err := pool.QueryRow(req.Context(),
+			`SELECT status, user_id, expires_at FROM platform.device_codes WHERE device_code = $1`,
+			body.DeviceCode,
+		).Scan(&status, &userID, &expiresAt)
+		if err != nil {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		if expiresAt.Before(time.Now()) {
+			http.Error(w, `{"error":"expired_token"}`, http.StatusBadRequest)
+			return
+		}
+		if status != "approved" || userID == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+			return
+		}
+		u, err := usersRepo.ByID(req.Context(), *userID)
+		if err != nil || u == nil {
+			http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		token, err := signer.Issue(u.ID, 30*24*time.Hour)
+		if err != nil {
+			http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		// One-shot: delete the row so the same device_code can't be exchanged twice.
+		_, _ = pool.Exec(req.Context(), `DELETE FROM platform.device_codes WHERE device_code = $1`, body.DeviceCode)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token": token,
+			"token_type":   "Bearer",
+			"handle":       u.Handle,
+			"id":           u.ID,
+		})
+	})
+
 	// ---- Internal (service-to-service) endpoints -----------------------
 	//
 	// Auth: short-lived RS256 JWT in `Authorization: Bearer ...`.
@@ -1602,6 +1719,34 @@ func main() {
 	}
 }
 
+func randomURLSafe(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// randomUserCode produces an XXXX-XXXX user code, alphanumeric, excluding
+// ambiguous characters (I, O, 0, 1).
+func randomUserCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, 9)
+	for i, b := range buf {
+		idx := i
+		if i >= 4 {
+			idx = i + 1
+		}
+		out[idx] = alphabet[int(b)%len(alphabet)]
+	}
+	out[4] = '-'
+	return string(out), nil
+}
+
 func ifEmpty(s, fallback string) string {
 	if s == "" {
 		return fallback
@@ -1790,6 +1935,34 @@ func issueStateChange(
 	// Re-fetch to return the updated issue.
 	updated, _ := issuesStore.GetByRepoAndNumber(req.Context(), repo.ID, number)
 	writeJSON(w, http.StatusOK, issueResponse(updated))
+}
+
+type ctxKey string
+
+const actorCtxKey ctxKey = "forge.actor"
+
+func bearerAuthMiddleware(signer *auth.Signer, usersRepo *users.Repo) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if strings.HasPrefix(h, "Bearer ") {
+				tok := strings.TrimPrefix(h, "Bearer ")
+				if sub, err := signer.Verify(tok); err == nil && sub != "" {
+					if u, err := usersRepo.ByID(r.Context(), sub); err == nil && u != nil {
+						r = r.WithContext(context.WithValue(r.Context(), actorCtxKey, u))
+					}
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func actorFromContext(ctx context.Context) *users.User {
+	if u, ok := ctx.Value(actorCtxKey).(*users.User); ok {
+		return u
+	}
+	return nil
 }
 
 func s2sAuthMiddleware(signer *auth.Signer) func(http.Handler) http.Handler {
