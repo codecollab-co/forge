@@ -36,6 +36,7 @@ import (
 	"github.com/codecollab-co/forge/forge-platform/internal/runs"
 	"github.com/codecollab-co/forge/forge-platform/internal/sshd"
 	"github.com/codecollab-co/forge/forge-platform/internal/sshkeys"
+	"github.com/codecollab-co/forge/forge-platform/internal/templates"
 	"github.com/codecollab-co/forge/forge-platform/internal/tokens"
 	"github.com/codecollab-co/forge/forge-platform/internal/users"
 )
@@ -124,6 +125,22 @@ func main() {
 			"website_url": websiteDomain,
 			"api_url":     envOr("API_DOMAIN", "http://localhost:8080"),
 		})
+	})
+
+	r.Get("/licenses", func(w http.ResponseWriter, _ *http.Request) {
+		out := make([]map[string]string, 0, len(templates.Licenses))
+		for _, l := range templates.Licenses {
+			out = append(out, map[string]string{"key": l.Key, "name": l.Name})
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	r.Get("/gitignore", func(w http.ResponseWriter, _ *http.Request) {
+		out := make([]map[string]string, 0, len(templates.Gitignores))
+		for _, g := range templates.Gitignores {
+			out = append(out, map[string]string{"key": g.Key, "name": g.Name})
+		}
+		writeJSON(w, http.StatusOK, out)
 	})
 
 	r.Post("/internal/token", func(w http.ResponseWriter, _ *http.Request) {
@@ -257,6 +274,8 @@ func main() {
 			Visibility  string `json:"visibility"`
 			InitReadme  bool   `json:"init_readme"`
 			ImportURL   string `json:"import_url"`
+			License     string `json:"license"`   // SPDX-ish key, e.g. "mit"
+			Gitignore   string `json:"gitignore"` // template key, e.g. "go"
 		}
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
@@ -307,11 +326,31 @@ func main() {
 			return
 		}
 
+		// Initial commit can include README.md + LICENSE + .gitignore.
+		// We only create one if any of the three was requested.
+		var initFiles []gitstorage.FileChange
 		if body.InitReadme {
 			readme := "# " + body.Name + "\n"
 			if body.Description != "" {
 				readme += "\n" + body.Description + "\n"
 			}
+			initFiles = append(initFiles, gitstorage.FileChange{Path: "README.md", Content: []byte(readme)})
+		}
+		if body.License != "" {
+			if lic, ok := templates.LicenseByKey(body.License); ok {
+				attribution := u.DisplayName
+				if attribution == "" {
+					attribution = u.Handle
+				}
+				initFiles = append(initFiles, gitstorage.FileChange{Path: "LICENSE", Content: []byte(lic.Render(attribution))})
+			}
+		}
+		if body.Gitignore != "" {
+			if gi, ok := templates.GitignoreByKey(body.Gitignore); ok {
+				initFiles = append(initFiles, gitstorage.FileChange{Path: ".gitignore", Content: []byte(gi.Body)})
+			}
+		}
+		if len(initFiles) > 0 {
 			authorName := u.Handle
 			if u.DisplayName != "" {
 				authorName = u.DisplayName
@@ -322,11 +361,11 @@ func main() {
 			}
 			if _, err := gitStorage.CreateCommit(
 				req.Context(), u.Handle, body.Name, "main", "main",
-				[]gitstorage.FileChange{{Path: "README.md", Content: []byte(readme)}},
+				initFiles,
 				gitstorage.Identity{Name: authorName, Email: authorEmail},
 				"Initial commit",
 			); err != nil {
-				log.Printf("init_readme failed for %s/%s: %v", u.Handle, body.Name, err)
+				log.Printf("init commit failed for %s/%s: %v", u.Handle, body.Name, err)
 			}
 		}
 

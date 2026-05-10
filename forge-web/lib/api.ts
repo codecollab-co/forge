@@ -164,7 +164,11 @@ export const api = {
     visibility?: "public" | "private";
     init_readme?: boolean;
     import_url?: string;
+    license?: string;
+    gitignore?: string;
   }) => request<Repo>("POST", "/repos", input),
+  listLicenses: () => request<{ key: string; name: string }[]>("GET", "/licenses"),
+  listGitignores: () => request<{ key: string; name: string }[]>("GET", "/gitignore"),
   updateRepo: (
     owner: string,
     name: string,
