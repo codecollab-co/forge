@@ -58,8 +58,11 @@ func loginCmd(stdout, _ io.Writer, store *authstore.Store) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("polling for token: %w", err)
 				}
+				// Best-effort fetch of website URL for `forge browse`. Non-fatal.
+				cfg, _ := api.New(apiURL, "").GetConfig(cmd.Context())
 				if err := store.Save(authstore.Credentials{
-					APIURL: apiURL, Token: tok.AccessToken, Handle: tok.Handle,
+					APIURL: apiURL, WebsiteURL: cfg.WebsiteURL,
+					Token: tok.AccessToken, Handle: tok.Handle,
 				}); err != nil {
 					return fmt.Errorf("saving credentials: %w", err)
 				}

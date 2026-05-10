@@ -14,9 +14,10 @@ import (
 var ErrNotLoggedIn = errors.New("not logged in")
 
 type Credentials struct {
-	APIURL string `json:"api_url"`
-	Token  string `json:"token"`
-	Handle string `json:"handle"`
+	APIURL     string `json:"api_url"`
+	WebsiteURL string `json:"website_url,omitempty"`
+	Token      string `json:"token"`
+	Handle     string `json:"handle"`
 }
 
 type Store struct {

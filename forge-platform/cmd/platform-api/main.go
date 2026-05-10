@@ -99,6 +99,13 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "forge-platform"})
 	})
 
+	r.Get("/config", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"website_url": websiteDomain,
+			"api_url":     envOr("API_DOMAIN", "http://localhost:8080"),
+		})
+	})
+
 	r.Post("/internal/token", func(w http.ResponseWriter, _ *http.Request) {
 		tok, err := signer.Issue("system", time.Hour)
 		if err != nil {

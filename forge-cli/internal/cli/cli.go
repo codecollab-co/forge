@@ -10,7 +10,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codecollab-co/forge/forge-cli/internal/auth"
+	apicmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/api"
 	authcmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/auth"
+	browsecmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/browse"
 	issuecmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/issue"
 	prcmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/pr"
 	repocmd "github.com/codecollab-co/forge/forge-cli/internal/cmd/repo"
@@ -56,5 +58,7 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	root.AddCommand(issuecmd.New(stdout, stderr, store))
 	root.AddCommand(prcmd.New(stdout, stderr, store))
 	root.AddCommand(runcmd.New(stdout, stderr, store))
+	root.AddCommand(browsecmd.New(stdout, stderr, store))
+	root.AddCommand(apicmd.New(stdout, stderr, store))
 	return root.Execute()
 }

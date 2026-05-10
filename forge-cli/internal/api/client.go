@@ -395,3 +395,43 @@ func (c *Client) Me(ctx context.Context) (Me, error) {
 	err := c.request(ctx, http.MethodGet, "/me", nil, &out)
 	return out, err
 }
+
+// ---- Public config -------------------------------------------------------
+
+type Config struct {
+	WebsiteURL string `json:"website_url"`
+	APIURL     string `json:"api_url"`
+}
+
+func (c *Client) GetConfig(ctx context.Context) (Config, error) {
+	var out Config
+	err := c.request(ctx, http.MethodGet, "/config", nil, &out)
+	return out, err
+}
+
+// ---- Raw passthrough -----------------------------------------------------
+//
+// RawRequest writes the raw response body to w. Used by `forge api`.
+func (c *Client) RawRequest(ctx context.Context, method, path string, body io.Reader, w io.Writer) (int, error) {
+	url := path
+	if !strings.HasPrefix(path, "http") {
+		url = c.baseURL + "/" + strings.TrimPrefix(path, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(w, resp.Body)
+	return resp.StatusCode, nil
+}
