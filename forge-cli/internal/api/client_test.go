@@ -71,6 +71,106 @@ func TestPollDeviceToken_PendingThenApproved(t *testing.T) {
 	}
 }
 
+func TestListRepos(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos" || r.Method != http.MethodGet {
+			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "r1", "owner": "alice", "name": "first", "visibility": "public", "clone_url": "/alice/first.git"},
+			{"id": "r2", "owner": "alice", "name": "second", "visibility": "private", "clone_url": "/alice/second.git"},
+		})
+	}))
+	defer srv.Close()
+	repos, err := api.New(srv.URL, "tok").ListRepos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 2 || repos[0].Name != "first" || repos[1].Visibility != "private" {
+		t.Fatalf("unexpected: %+v", repos)
+	}
+}
+
+func TestGetRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/alice/foo" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "r1", "owner": "alice", "name": "foo", "visibility": "public",
+			"description": "hi", "clone_url": "/alice/foo.git",
+		})
+	}))
+	defer srv.Close()
+	r, err := api.New(srv.URL, "tok").GetRepo(context.Background(), "alice", "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name != "foo" || r.Description != "hi" {
+		t.Fatalf("unexpected: %+v", r)
+	}
+}
+
+func TestCreateRepo_SendsBody(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos" || r.Method != http.MethodPost {
+			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "r1", "owner": "alice", "name": got["name"], "visibility": got["visibility"],
+			"clone_url": "/alice/" + got["name"].(string) + ".git",
+		})
+	}))
+	defer srv.Close()
+	r, err := api.New(srv.URL, "tok").CreateRepo(context.Background(), api.CreateRepoInput{
+		Name: "newone", Description: "d", Visibility: "private", InitReadme: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name != "newone" || got["init_readme"] != true || got["visibility"] != "private" {
+		t.Errorf("unexpected: %+v body=%+v", r, got)
+	}
+}
+
+func TestDeleteRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/alice/foo" || r.Method != http.MethodDelete {
+			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	if err := api.New(srv.URL, "tok").DeleteRepo(context.Background(), "alice", "foo"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/alice/foo" || r.Method != http.MethodPatch {
+			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "r1", "owner": "alice", "name": "foo", "visibility": "private",
+			"description": "new", "clone_url": "/alice/foo.git",
+		})
+	}))
+	defer srv.Close()
+	desc, vis := "new", "private"
+	r, err := api.New(srv.URL, "tok").UpdateRepo(context.Background(), "alice", "foo",
+		api.UpdateRepoInput{Description: &desc, Visibility: &vis})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Visibility != "private" || r.Description != "new" {
+		t.Fatalf("unexpected: %+v", r)
+	}
+}
+
 func TestMe_SendsBearerHeader(t *testing.T) {
 	var seen string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

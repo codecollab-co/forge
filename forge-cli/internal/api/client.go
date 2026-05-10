@@ -112,6 +112,60 @@ func (c *Client) PollDeviceToken(ctx context.Context, deviceCode string) (Device
 	return out, err
 }
 
+// ---- Repos ---------------------------------------------------------------
+
+type Repo struct {
+	ID          string `json:"id"`
+	Owner       string `json:"owner"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Visibility  string `json:"visibility"`
+	CreatedAt   string `json:"created_at"`
+	CloneURL    string `json:"clone_url"`
+}
+
+type CreateRepoInput struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Visibility  string `json:"visibility,omitempty"`
+	InitReadme  bool   `json:"init_readme,omitempty"`
+	ImportURL   string `json:"import_url,omitempty"`
+}
+
+type UpdateRepoInput struct {
+	Description *string `json:"description,omitempty"`
+	Visibility  *string `json:"visibility,omitempty"`
+	Name        *string `json:"name,omitempty"`
+}
+
+func (c *Client) ListRepos(ctx context.Context) ([]Repo, error) {
+	var out []Repo
+	err := c.request(ctx, http.MethodGet, "/repos", nil, &out)
+	return out, err
+}
+
+func (c *Client) GetRepo(ctx context.Context, owner, name string) (Repo, error) {
+	var out Repo
+	err := c.request(ctx, http.MethodGet, "/repos/"+owner+"/"+name, nil, &out)
+	return out, err
+}
+
+func (c *Client) CreateRepo(ctx context.Context, in CreateRepoInput) (Repo, error) {
+	var out Repo
+	err := c.request(ctx, http.MethodPost, "/repos", in, &out)
+	return out, err
+}
+
+func (c *Client) UpdateRepo(ctx context.Context, owner, name string, in UpdateRepoInput) (Repo, error) {
+	var out Repo
+	err := c.request(ctx, http.MethodPatch, "/repos/"+owner+"/"+name, in, &out)
+	return out, err
+}
+
+func (c *Client) DeleteRepo(ctx context.Context, owner, name string) error {
+	return c.request(ctx, http.MethodDelete, "/repos/"+owner+"/"+name, nil, nil)
+}
+
 // ---- Me ------------------------------------------------------------------
 
 type Me struct {
