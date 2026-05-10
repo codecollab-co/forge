@@ -1,0 +1,107 @@
+# GoReleaser config for the forge CLI (ADR-0012).
+# Run locally with `goreleaser release --snapshot --clean` to dry-run.
+version: 2
+
+project_name: forge
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: forge
+    main: ./cmd/forge
+    binary: forge
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/codecollab-co/forge/forge-cli/internal/cli.Version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: forge
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^.*(feat|add)[:(].*"
+      order: 0
+    - title: Fixes
+      regexp: "^.*(fix|bug)[:(].*"
+      order: 1
+    - title: Other
+      order: 999
+
+# Cosign keyless signatures via GitHub OIDC (ADR-0012).
+signs:
+  - cmd: cosign
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: all
+    output: true
+
+brews:
+  - name: forge
+    repository:
+      owner: codecollab-co
+      name: homebrew-forge
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/codecollab-co/forge"
+    description: "Forge CLI — interact with Forge from your terminal"
+    license: Apache-2.0
+    test: |
+      system "#{bin}/forge", "--version"
+    install: |
+      bin.install "forge"
+
+scoops:
+  - name: forge
+    repository:
+      owner: codecollab-co
+      name: scoop-forge
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/codecollab-co/forge"
+    description: "Forge CLI — interact with Forge from your terminal"
+    license: Apache-2.0
+
+release:
+  github:
+    owner: codecollab-co
+    name: forge
+  draft: false
+  prerelease: auto
+  header: |
+    ## forge {{ .Tag }}
+    See https://github.com/codecollab-co/forge for documentation.
+  footer: |
+    ### Install
+    ```bash
+    brew install codecollab-co/forge/forge          # macOS / Linux
+    curl -fsSL https://raw.githubusercontent.com/codecollab-co/forge/main/scripts/install-forge.sh | sh
+    scoop install forge                              # Windows (after `scoop bucket add forge https://github.com/codecollab-co/scoop-forge`)
+    ```
