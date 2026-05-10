@@ -298,6 +298,87 @@ func (c *Client) AssignAgent(ctx context.Context, owner, name string, number int
 	return out, err
 }
 
+// ---- Pull Requests -------------------------------------------------------
+
+type PullRequest struct {
+	ID             string `json:"id"`
+	Number         int    `json:"number"`
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	HeadBranch     string `json:"head_branch"`
+	BaseBranch     string `json:"base_branch"`
+	State          string `json:"state"`
+	Author         string `json:"author"`
+	MergeCommitOID string `json:"merge_commit_oid,omitempty"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type PullComment struct {
+	ID         string `json:"id"`
+	Body       string `json:"body"`
+	Author     string `json:"author"`
+	AuthorKind string `json:"author_kind"`
+	CreatedAt  string `json:"created_at"`
+}
+
+type PullDetail struct {
+	PullRequest PullRequest   `json:"pull_request"`
+	Diff        string        `json:"diff"`
+	Comments    []PullComment `json:"comments"`
+}
+
+type CreatePullInput struct {
+	Title      string `json:"title"`
+	Body       string `json:"body,omitempty"`
+	HeadBranch string `json:"head_branch"`
+	BaseBranch string `json:"base_branch"`
+}
+
+func (c *Client) ListPulls(ctx context.Context, owner, name, state string) ([]PullRequest, error) {
+	path := "/repos/" + owner + "/" + name + "/pulls"
+	if state != "" && state != "all" {
+		path += "?state=" + state
+	}
+	var out []PullRequest
+	err := c.request(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
+func (c *Client) GetPull(ctx context.Context, owner, name string, number int) (PullDetail, error) {
+	var out PullDetail
+	err := c.request(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, name, number), nil, &out)
+	return out, err
+}
+
+func (c *Client) CreatePull(ctx context.Context, owner, name string, in CreatePullInput) (PullRequest, error) {
+	var out PullRequest
+	err := c.request(ctx, http.MethodPost,
+		"/repos/"+owner+"/"+name+"/pulls", in, &out)
+	return out, err
+}
+
+func (c *Client) CommentOnPull(ctx context.Context, owner, name string, number int, body string) (PullComment, error) {
+	var out PullComment
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, name, number),
+		map[string]string{"body": body}, &out)
+	return out, err
+}
+
+type MergeResult struct {
+	MergeCommitOID string `json:"merge_commit_oid"`
+	State          string `json:"state"`
+}
+
+func (c *Client) MergePull(ctx context.Context, owner, name string, number int, deleteBranch bool) (MergeResult, error) {
+	var out MergeResult
+	err := c.request(ctx, http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, name, number),
+		map[string]bool{"delete_branch": deleteBranch}, &out)
+	return out, err
+}
+
 // ---- Me ------------------------------------------------------------------
 
 type Me struct {
