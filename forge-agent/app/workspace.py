@@ -1,16 +1,22 @@
-"""VirtualFilesystemWorkspace — slice-8 sandbox execution surface.
+"""VirtualFilesystem — in-process workspace used in tests and as the
+local-dev default when E2B_API_KEY is empty.
 
 Holds a dict of `path -> contents` seeded from the repository at HEAD.
 Tools mutate this dict; at end-of-run the Runner asks for `changed_files()`
 to decide what to commit.
 
-Real E2B sandboxes will satisfy the same `Workspace` protocol from `tools`
-when slice 8a lands.
+`run_shell` is intentionally unavailable here — the in-memory workspace
+has no shell. Returns an exit-code-1 ShellResult with a clear error so
+the agent's tool-result block is informative rather than mysterious.
+
+The real E2B-backed workspace lives in app/e2b_workspace.py.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from app.tools import ShellResult
 
 
 @dataclass
@@ -38,3 +44,10 @@ class VirtualFilesystem:
             if self._seed.get(path) != content:
                 out.append((path, content))
         return out
+
+    def run_shell(self, command: str, timeout_seconds: int = 60) -> ShellResult:
+        return ShellResult(
+            stdout="",
+            stderr="run_shell is not available in the in-memory workspace; set E2B_API_KEY",
+            exit_code=1,
+        )

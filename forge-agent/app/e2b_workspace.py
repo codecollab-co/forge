@@ -15,6 +15,8 @@ import logging
 import shlex
 from typing import Any
 
+from app.tools import ShellResult
+
 logger = logging.getLogger(__name__)
 
 WORK_DIR = "/repo"
@@ -66,6 +68,22 @@ class E2BWorkspace:
         parent = full.rsplit("/", 1)[0]
         self._run(f"mkdir -p {shlex.quote(parent)}")
         self._sb.files.write(full, content)
+
+    # ---- run_shell --------------------------------------------------------
+
+    def run_shell(self, command: str, timeout_seconds: int = 60) -> ShellResult:
+        # Run from the repo root so 'pytest' / 'npm test' / 'go test ./...'
+        # do the obvious thing.
+        wrapped = f"cd {WORK_DIR} && {command}"
+        try:
+            result = self._sb.commands.run(wrapped, timeout=timeout_seconds)
+        except Exception as exc:  # network blip, timeout, sandbox died
+            return ShellResult(stdout="", stderr=str(exc), exit_code=124)
+        return ShellResult(
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            exit_code=int(result.exit_code or 0),
+        )
 
     # ---- end-of-run -------------------------------------------------------
 

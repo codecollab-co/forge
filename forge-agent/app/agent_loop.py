@@ -37,6 +37,12 @@ and apply it via the available tools.
 Rules:
 - Make the smallest correct change. Do not refactor unrelated code.
 - Edit files only inside the Repository.
+- After meaningful changes, run the project's tests via `run_shell` if a
+  test command is obvious (e.g. `pytest -q`, `go test ./...`, `npm test`).
+  If tests fail, fix the regression before calling final_answer.
+- Use `run_shell` for tests, formatters, linters, package managers, or
+  inspecting `git status`. Don't use it for anything destructive (rm -rf,
+  network exfiltration, etc.) — the sandbox enforces this anyway.
 - Call `final_answer` exactly once when you are done. Provide a one-paragraph
   summary suitable for a PR description.
 - If you cannot make a useful change, still call `final_answer` with an

@@ -28,6 +28,14 @@ class Workspace(Protocol):
     def read_file(self, path: str) -> str | None: ...
     def write_file(self, path: str, content: str) -> None: ...
     def changed_files(self) -> list[tuple[str, str]]: ...
+    def run_shell(self, command: str, timeout_seconds: int = 60) -> "ShellResult": ...
+
+
+@dataclass(frozen=True)
+class ShellResult:
+    stdout: str
+    stderr: str
+    exit_code: int
 
 
 TOOL_DEFS: tuple[ToolDef, ...] = (
@@ -59,6 +67,24 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
                 "content": {"type": "string"},
             },
             "required": ["path", "content"],
+        },
+    ),
+    ToolDef(
+        name="run_shell",
+        description=(
+            "Run a shell command inside the repository sandbox (cwd is the "
+            "repo root). Use for: running tests, formatters, linters, "
+            "package managers, git status, etc. Output is truncated to "
+            "~10 KB per stream. Times out after 60s by default; raise it "
+            "with timeout_seconds for long test suites."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+            },
+            "required": ["command"],
         },
     ),
     ToolDef(
@@ -98,6 +124,18 @@ def execute(tool_name: str, tool_input: dict, workspace: Workspace) -> ToolOutpu
             workspace.write_file(tool_input["path"], tool_input["content"])
             return ToolOutput(content=f"wrote {tool_input['path']}")
 
+        if tool_name == "run_shell":
+            cmd = tool_input.get("command", "")
+            timeout = int(tool_input.get("timeout_seconds", 60))
+            res = workspace.run_shell(cmd, timeout)
+            body = (
+                f"$ {cmd}\n"
+                f"exit_code: {res.exit_code}\n"
+                f"--- stdout ---\n{_truncate(res.stdout)}\n"
+                f"--- stderr ---\n{_truncate(res.stderr)}"
+            )
+            return ToolOutput(content=body, is_error=res.exit_code != 0)
+
         if tool_name == "final_answer":
             return ToolOutput(
                 content="acknowledged",
@@ -108,3 +146,9 @@ def execute(tool_name: str, tool_input: dict, workspace: Workspace) -> ToolOutpu
         return ToolOutput(content=f"unknown tool: {tool_name}", is_error=True)
     except Exception as exc:
         return ToolOutput(content=f"tool error: {exc}", is_error=True)
+
+
+def _truncate(s: str, limit: int = 10_000) -> str:
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"\n…(truncated, {len(s) - limit} bytes omitted)"

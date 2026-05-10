@@ -78,6 +78,44 @@ async def test_agent_loop_fails_when_model_ends_without_final_answer():
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_run_shell_surfaces_exit_code_in_tool_result():
+    # The InMemoryFake VFS's run_shell returns exit_code=1 with a clear
+    # 'set E2B_API_KEY' message. Assert that bubbles into the assistant turn
+    # the model sees, so the agent can adapt.
+    from app.workspace import VirtualFilesystem
+
+    vfs = VirtualFilesystem.seeded({})
+    captured: list = []
+
+    class CapturingFake:
+        def __init__(self) -> None:
+            self.responses = [
+                _resp_tools(ToolUse(id="t1", name="run_shell", input={"command": "pytest -q"})),
+                _resp_tools(ToolUse(id="t2", name="final_answer", input={"summary": "noop"})),
+            ]
+
+        async def call(self, *, system, messages, tools, model="x", max_tokens=4096):
+            captured.append(messages[-1].content if messages else None)
+            import asyncio
+            await asyncio.sleep(0)
+            return self.responses.pop(0)
+
+    fake = CapturingFake()
+    await run_agent(
+        model=fake, workspace=vfs,
+        issue_title="run tests", issue_body="",
+        repo_owner="alice", repo_name="r",
+    )
+    # The second model call sees the tool_result for run_shell. It must
+    # carry the 'set E2B_API_KEY' guidance and is_error=True.
+    second = captured[1]
+    assert isinstance(second, list)
+    tool_result = next(b for b in second if b.get("type") == "tool_result")
+    assert tool_result["is_error"] is True
+    assert "E2B_API_KEY" in tool_result["content"]
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_caps_iterations():
     # Construct an infinite list-of-files loop to verify the iteration cap.
     model = FakeModelClient(
